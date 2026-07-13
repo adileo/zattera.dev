@@ -73,6 +73,11 @@ type Executor struct {
 	// retry-then-park policy. Accessed only from the reconcile path (serial).
 	failCount map[string]int
 	failHash  map[string]string
+
+	// health probes running instances and reports HEALTHY/UNHEALTHY. Built in
+	// Run (bounded by its context); nil when reconcile is driven directly
+	// (e.g. unit tests that assert raw RUNNING transitions).
+	health *Manager
 }
 
 // NewExecutor builds an Executor, filling defaults.
@@ -115,6 +120,14 @@ func (e *Executor) Submit(set *clusterv1.AssignmentSet) {
 // Run drives reconciliation: on every submitted set and on a periodic tick
 // (which retries failed assignments and re-checks liveness) until ctx ends.
 func (e *Executor) Run(ctx context.Context) {
+	// Health probes are bounded by this run's lifetime.
+	e.health = NewManager(ctx, ManagerConfig{
+		Clock:   e.clock,
+		Report:  e.cfg.Report,
+		Runtime: e.rt,
+		HostIP:  e.cfg.HostIP,
+		Logger:  e.log,
+	})
 	tick := e.clock.NewTicker(e.cfg.PollInterval)
 	defer tick.Stop()
 	for {
@@ -178,6 +191,16 @@ func (e *Executor) reconcile(ctx context.Context, set *clusterv1.AssignmentSet) 
 	sort.Slice(toRemove, func(i, j int) bool { return toRemove[i].assignID < toRemove[j].assignID })
 	for _, c := range toRemove {
 		e.stopAndRemove(ctx, c)
+		if e.health != nil {
+			e.health.Remove(c.assignID)
+		}
+	}
+
+	// live tracks assignments with a running container (adopted or newly
+	// started) so the health manager can prune monitors for the rest.
+	live := map[string]string{} // assignment id → container id
+	for id := range adopted {
+		live[id] = current[id].id
 	}
 
 	// RUN pass: create+start every desired-RUN assignment without a live match.
@@ -186,13 +209,33 @@ func (e *Executor) reconcile(ctx context.Context, set *clusterv1.AssignmentSet) 
 		if a.GetDesired() != zatterav1.AssignmentDesired_ASSIGNMENT_DESIRED_RUN || adopted[id] {
 			continue
 		}
-		if obs := e.bringUp(ctx, a, runtimes[id]); obs != nil {
-			observed[id] = obs
+		obs := e.bringUp(ctx, a, runtimes[id])
+		if obs == nil {
+			continue
+		}
+		observed[id] = obs
+		if obs.GetState() == zatterav1.InstanceState_INSTANCE_STATE_RUNNING {
+			live[id] = obs.GetContainerId()
 		}
 	}
 
+	// Emit the RUNNING/STOPPED batch before health so a subsequent HEALTHY
+	// transition is not clobbered by the RUNNING report.
 	if len(observed) > 0 {
 		e.emit(observed)
+	}
+
+	// Health monitoring: prune monitors for gone instances, ensure one per live
+	// instance (idempotent). Skipped when reconcile runs without a manager.
+	if e.health != nil {
+		liveSet := make(map[string]bool, len(live))
+		for id := range live {
+			liveSet[id] = true
+		}
+		e.health.Reconcile(liveSet)
+		for id, cid := range live {
+			e.health.Ensure(ctx, desired[id], runtimes[id].GetSpec(), cid)
+		}
 	}
 }
 

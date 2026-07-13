@@ -254,9 +254,12 @@ func NewManager(base context.Context, cfg ManagerConfig) *Manager {
 	}
 }
 
-// Ensure starts a monitor for the assignment if one is not already running. A
-// service without a health check is reported HEALTHY immediately.
-func (m *Manager) Ensure(a *zatterav1.Assignment, spec *zatterav1.ServiceSpec, st crt.ContainerState) {
+// Ensure starts a monitor for the assignment if one is not already running
+// (idempotent, so callers may invoke it on every reconcile). A service without
+// a health check is reported HEALTHY immediately. For HTTP/TCP probes the
+// container is inspected to resolve the probe address; the inspect happens only
+// when a monitor is actually created.
+func (m *Manager) Ensure(ctx context.Context, a *zatterav1.Assignment, spec *zatterav1.ServiceSpec, containerID string) {
 	id := a.GetMeta().GetId()
 	m.mu.Lock()
 	if _, ok := m.monitors[id]; ok {
@@ -271,24 +274,24 @@ func (m *Manager) Ensure(a *zatterav1.Assignment, spec *zatterav1.ServiceSpec, s
 		m.mu.Unlock()
 		if m.report != nil {
 			m.report(map[string]*zatterav1.AssignmentObserved{
-				id: {State: zatterav1.InstanceState_INSTANCE_STATE_HEALTHY, ContainerId: st.ID, UpdatedAt: timestamppb.New(m.clock.Now())},
+				id: {State: zatterav1.InstanceState_INSTANCE_STATE_HEALTHY, ContainerId: containerID, UpdatedAt: timestamppb.New(m.clock.Now())},
 			})
 		}
 		return
 	}
 
-	probe, ok := m.buildProbe(hc, spec, st)
+	probe, ok := m.buildProbe(ctx, hc, spec, containerID)
 	if !ok {
 		m.mu.Unlock()
 		m.log.Warn("health: could not resolve a probe target; skipping", "assignment", id)
 		return
 	}
-	ctx, cancel := context.WithCancel(m.base)
+	pctx, cancel := context.WithCancel(m.base)
 	m.monitors[id] = cancel
 	m.mu.Unlock()
 
 	mon := &Monitor{assignID: id, probe: probe, cfg: resolveHealthConfig(hc), clock: m.clock, report: m.report, log: m.log}
-	go mon.Run(ctx)
+	go mon.Run(pctx)
 }
 
 // Remove stops the monitor for an assignment (idempotent).
@@ -300,6 +303,14 @@ func (m *Manager) Remove(assignID string) {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// monitored reports whether a monitor is currently tracked for the assignment.
+func (m *Manager) monitored(assignID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.monitors[assignID]
+	return ok
 }
 
 // Reconcile stops monitors whose assignment is no longer live.
@@ -318,8 +329,9 @@ func (m *Manager) Reconcile(live map[string]bool) {
 	}
 }
 
-// buildProbe resolves the probe for a health check against a container.
-func (m *Manager) buildProbe(hc *zatterav1.HealthCheck, spec *zatterav1.ServiceSpec, st crt.ContainerState) (Probe, bool) {
+// buildProbe resolves the probe for a health check against a container. EXEC
+// needs only the container id; HTTP/TCP inspect the container for its address.
+func (m *Manager) buildProbe(ctx context.Context, hc *zatterav1.HealthCheck, spec *zatterav1.ServiceSpec, containerID string) (Probe, bool) {
 	typ := hc.GetType()
 	if typ == zatterav1.HealthCheckType_HEALTH_CHECK_TYPE_UNSPECIFIED {
 		// Default: HTTP when the service exposes a port, else TCP.
@@ -331,9 +343,13 @@ func (m *Manager) buildProbe(hc *zatterav1.HealthCheck, spec *zatterav1.ServiceS
 	}
 
 	if typ == zatterav1.HealthCheckType_HEALTH_CHECK_TYPE_EXEC {
-		return execProbe(m.rt, st.ID, hc.GetCommand()), true
+		return execProbe(m.rt, containerID, hc.GetCommand()), true
 	}
 
+	st, err := m.rt.InspectContainer(ctx, containerID)
+	if err != nil {
+		return nil, false
+	}
 	addr, ok := probeTarget(m.useHostPort, healthPort(hc, spec), st, m.hostIP)
 	if !ok {
 		return nil, false

@@ -106,6 +106,28 @@ func TestExecutor(t *testing.T) {
 		}
 	})
 
+	t.Run("wired health reports HEALTHY and prunes on teardown", func(t *testing.T) {
+		rt := fakeruntime.New()
+		rec := &statusRec{latest: map[string]*zatterav1.AssignmentObserved{}}
+		e := newExec(rt, rec)
+		// Attach a health manager as Run would (no health check → HEALTHY).
+		e.health = NewManager(context.Background(), ManagerConfig{Clock: clock.NewFake(), Report: rec.sink, Runtime: rt})
+
+		e.reconcile(ctx(), buildSet(1, pair(assign("a1", "h1", run), rtp("nginx:alpine", port("http", 8080)))))
+		if rec.state("a1") != healthy {
+			t.Fatalf("no-healthcheck instance should reach HEALTHY, got %v", rec.state("a1"))
+		}
+		if !e.health.monitored("a1") {
+			t.Fatal("expected a health monitor for a1")
+		}
+
+		// Assignment removed → monitor pruned.
+		e.reconcile(ctx(), buildSet(2))
+		if e.health.monitored("a1") {
+			t.Fatal("monitor should be pruned after the assignment is gone")
+		}
+	})
+
 	t.Run("pull failure reports FAILED, retries, then parks", func(t *testing.T) {
 		rt := fakeruntime.New()
 		rt.Hooks.FailPull = func(ref string) error {

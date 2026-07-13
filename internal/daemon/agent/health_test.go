@@ -67,7 +67,7 @@ func TestHealth(t *testing.T) {
 	t.Run("no healthcheck reports HEALTHY immediately", func(t *testing.T) {
 		rec := &statusRec{latest: map[string]*zatterav1.AssignmentObserved{}}
 		mgr := NewManager(context.Background(), ManagerConfig{Clock: clock.NewFake(), Report: rec.sink})
-		mgr.Ensure(assign("a1", "h1", run), &zatterav1.ServiceSpec{}, crt.ContainerState{ID: "c1"})
+		mgr.Ensure(context.Background(), assign("a1", "h1", run), &zatterav1.ServiceSpec{}, "c1")
 		if rec.state("a1") != healthy {
 			t.Fatalf("expected immediate HEALTHY, got %v", rec.state("a1"))
 		}
