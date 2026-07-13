@@ -25,6 +25,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 
+	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/daemon/ca"
 )
@@ -51,6 +52,9 @@ type Options struct {
 	NodeService    zatterav1.NodeServiceServer
 	StateService   zatterav1.StateServiceServer
 	AuditService   zatterav1.AuditServiceServer
+
+	// Node↔control services (mTLS node identity, no REST gateway).
+	AgentSyncService clusterv1.AgentSyncServiceServer
 
 	// Interceptors run in the given order (auth → rbac → audit → leader-forward
 	// per later tasks). Health checks bypass them via a method skip inside each.
@@ -212,6 +216,9 @@ func registerGRPC(s *grpc.Server, opts Options) {
 	}
 	if opts.AuditService != nil {
 		zatterav1.RegisterAuditServiceServer(s, opts.AuditService)
+	}
+	if opts.AgentSyncService != nil {
+		clusterv1.RegisterAgentSyncServiceServer(s, opts.AgentSyncService)
 	}
 }
 

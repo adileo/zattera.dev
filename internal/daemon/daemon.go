@@ -22,18 +22,23 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/config"
+	"github.com/zattera-dev/zattera/internal/daemon/agent"
 	"github.com/zattera-dev/zattera/internal/daemon/api"
 	"github.com/zattera-dev/zattera/internal/daemon/ca"
+	"github.com/zattera-dev/zattera/internal/daemon/livestate"
 	"github.com/zattera-dev/zattera/internal/daemon/nodeinfo"
 	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
+	crt "github.com/zattera-dev/zattera/internal/daemon/runtime"
 	"github.com/zattera-dev/zattera/internal/daemon/secrets"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
+	"github.com/zattera-dev/zattera/internal/pkgutil/version"
 	"github.com/zattera-dev/zattera/internal/state"
 )
 
@@ -177,18 +182,24 @@ func Run(ctx context.Context, cfg config.Config) error {
 		}
 	}()
 
+	// Leader-memory livestate (T-14): agent presence, heartbeats and live
+	// samples. Rebuilt from the agent streams on every election; never in Raft.
+	live := livestate.New(clk)
+	syncSrv := api.NewSyncServer(st, rs, live, clk, log, sealer)
+
 	apiSrv, err := api.New(api.Options{
-		CA:             authority,
-		Listen:         cfg.API.Listen,
-		Logger:         log,
-		DNSNames:       serverDNSNames(cfg),
-		IPs:            serverIPs(),
-		AuthService:    api.NewAuthServer(st, rs, clk),
-		ProjectService: api.NewProjectServer(st, rs, clk, rbac),
-		AppService:     api.NewAppServer(st, rs, clk, sealer),
-		StateService:   api.NewStateServer(st, rs, clk),
-		NodeService:    api.NewNodeServer(st, rs, clk, authority),
-		AuditService:   auditor,
+		CA:               authority,
+		Listen:           cfg.API.Listen,
+		Logger:           log,
+		DNSNames:         serverDNSNames(cfg),
+		IPs:              serverIPs(),
+		AuthService:      api.NewAuthServer(st, rs, clk),
+		ProjectService:   api.NewProjectServer(st, rs, clk, rbac),
+		AppService:       api.NewAppServer(st, rs, clk, sealer),
+		StateService:     api.NewStateServer(st, rs, clk),
+		NodeService:      api.NewNodeServer(st, rs, clk, authority),
+		AuditService:     auditor,
+		AgentSyncService: syncSrv,
 		UnaryInterceptors: []grpc.UnaryServerInterceptor{
 			forwarder.UnaryInterceptor, authn.UnaryInterceptor, rbac.UnaryInterceptor, auditor.UnaryInterceptor,
 		},
@@ -200,7 +211,37 @@ func Run(ctx context.Context, cfg config.Config) error {
 	apiErr := make(chan error, 1)
 	go func() { apiErr <- apiSrv.Serve(ctx) }()
 
-	// TODO(T-16): start the agent when the node has the worker role.
+	// Node agent (T-14): on worker-capable nodes, open the AgentSync stream to
+	// the control plane and send heartbeats. In single-node/dev the control
+	// node dials its own API over loopback with a self-issued node cert (the
+	// mTLS identity the Sync method requires). The executor (T-15) reconciles
+	// the pushed assignments against Docker.
+	if cfg.HasRole(config.RoleWorker) {
+		// Attach the Docker runtime so the executor can converge assignments.
+		// A node without a reachable engine still runs the agent (stream +
+		// heartbeats), just without execution.
+		var rt crt.ContainerRuntime
+		if dk, err := crt.NewDocker(); err != nil {
+			log.Warn("container runtime unavailable; agent runs without an executor", "err", err)
+		} else {
+			rt = dk
+		}
+		na := agent.New(agent.Config{
+			NodeID:   nodeID,
+			Version:  version.Version,
+			Clock:    clk,
+			Logger:   log,
+			DiskPath: cfg.DataDir,
+			Runtime:  rt,
+			HostIP:   agentHostIP(cfg),
+			Dial:     localAgentDialer(authority, nodeID, cfg.API.Listen, log),
+		})
+		go func() {
+			if err := na.Run(ctx); err != nil && ctx.Err() == nil {
+				log.Warn("node agent stopped", "err", err)
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -297,6 +338,52 @@ func leaderAPIResolver(rs *raftstore.Store, st *state.Store, cfg config.Config) 
 func leaderDialOpts(authority *ca.CA) []grpc.DialOption {
 	creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: authority.Pool()})
 	return []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+}
+
+// localAgentDialer returns a Dial for the node's own agent to reach the local
+// control API over loopback. It presents a self-issued node identity cert so
+// the AgentSync method (mTLS, node-tier) accepts the stream. In a multi-node
+// mesh the join flow (T-17) provisions the node cert and the control address;
+// this loopback path covers single-node/dev and a control node's own worker.
+func localAgentDialer(authority *ca.CA, nodeID, apiListen string, log *slog.Logger) func(context.Context) (*agent.Conn, error) {
+	_, port, err := net.SplitHostPort(apiListen)
+	if err != nil || port == "" {
+		port = "8443"
+	}
+	addr := net.JoinHostPort("127.0.0.1", port)
+
+	// Issue the node cert once; the agent reuses it across reconnects.
+	var dialOpt grpc.DialOption
+	if leaf, err := authority.IssueNode(nodeID, nil, ca.NodeCertTTL); err != nil {
+		log.Warn("agent: issue node cert failed", "err", err)
+		dialOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else if tlsCert, err := leaf.TLSCertificate(authority.CABundlePEM()); err != nil {
+		log.Warn("agent: build node tls cert failed", "err", err)
+		dialOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		tlsCfg := authority.ClientTLSConfig(tlsCert)
+		tlsCfg.ServerName = "127.0.0.1"
+		dialOpt = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+	}
+
+	return func(context.Context) (*agent.Conn, error) {
+		cc, err := grpc.NewClient(addr, dialOpt)
+		if err != nil {
+			return nil, err
+		}
+		return &agent.Conn{ClientConnInterface: cc, Close: cc.Close}, nil
+	}
+}
+
+// agentHostIP is where the executor publishes container ports. Single-node/dev
+// (mesh disabled) uses loopback; the mesh IP is threaded through once the mesh
+// is up (T-19).
+func agentHostIP(cfg config.Config) string {
+	if cfg.Mesh.Disabled {
+		return "127.0.0.1"
+	}
+	// TODO(T-19): return the node's allocated mesh IP.
+	return "127.0.0.1"
 }
 
 // bindLoopback turns ":7480" into "127.0.0.1:7480" for single-node mode

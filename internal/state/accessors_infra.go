@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 
@@ -124,6 +125,12 @@ func (s *Store) SetAssignmentObserved(nodeID string, observed map[string]*zatter
 			continue
 		}
 		a.Observed = clone(obs)
+		// The agent reports the host ports it actually bound; promote them into
+		// the assignment so routing/proxy read them from the desired object
+		// (T-15). Empty maps (e.g. a stop transition) don't clobber prior ports.
+		if len(obs.GetMeshPortBindings()) > 0 {
+			a.MeshPortBindings = maps.Clone(obs.GetMeshPortBindings())
+		}
 		s.touch(KindAssignment, id)
 	}
 }
