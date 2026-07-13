@@ -18,6 +18,8 @@ type Context struct {
 	Token  string `toml:"token"`
 	// CACertPEM pins the cluster CA (dev mode / self-signed).
 	CACertPEM string `toml:"ca_cert_pem,omitempty"`
+	// Insecure skips TLS verification (dev clusters without a pinned CA).
+	Insecure bool `toml:"insecure,omitempty"`
 	// DefaultProject for commands that take --project.
 	DefaultProject string `toml:"default_project,omitempty"`
 }

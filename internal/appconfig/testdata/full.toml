@@ -1,0 +1,62 @@
+[app]
+name = "web"
+
+[build]
+type = "dockerfile"
+dockerfile = "docker/Dockerfile"
+context = "src"
+[build.args]
+NODE_ENV = "production"
+
+[github]
+repo = "acme/web"
+previews = true
+
+[deploy.healthcheck]
+type = "http"
+path = "/status"
+interval = "15s"
+timeout = "3s"
+grace_period = "30s"
+unhealthy_threshold = 5
+
+[[cron]]
+name = "nightly"
+schedule = "0 2 * * *"
+command = "rake cleanup"
+concurrency = "forbid"
+
+[env.production]
+min_replicas = 2
+max_replicas = 6
+domains = ["web.example.com", "www.example.com"]
+idle_timeout = "15m"
+stateful = false
+max_concurrency = 50
+command = "server --prod"
+scale_to_zero = true
+
+[env.production.autoscale]
+target_cpu_percent = 70
+target_rps_per_replica = 100
+
+[env.production.resources]
+cpu_millis = 500
+memory_mb = 512
+
+[[env.production.ports]]
+name = "http"
+container_port = 3000
+protocol = "http"
+
+[[env.production.volumes]]
+name = "uploads"
+mount_path = "/data/uploads"
+
+[env.staging]
+replicas = 1
+
+[[env.staging.cron]]
+name = "staging-sync"
+schedule = "*/5 * * * *"
+command = "sync"

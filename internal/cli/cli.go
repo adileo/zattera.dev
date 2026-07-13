@@ -7,28 +7,33 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/zattera-dev/zattera/internal/cli/cliconfig"
-	"github.com/zattera-dev/zattera/internal/cli/ui"
+	"github.com/zattera-dev/zattera/pkg/apiclient"
 )
 
 // jsonFlag is the global --json toggle shared by all CLI commands.
 var jsonFlag bool
-
-// printer builds the shared output printer.
-func printer() *ui.Printer {
-	return &ui.Printer{Out: os.Stdout, Err: os.Stderr, JSON: jsonFlag}
-}
 
 // Commands returns all user-facing top-level commands.
 func Commands() []*cobra.Command {
 	cmds := []*cobra.Command{
 		newLoginCmd(),
 		newContextCmd(),
+		newProjectsCmd(),
+		newAppsCmd(),
+		newEnvCmd(),
+		newInitCmd(),
+		newApplyCmd(),
+		newStateCmd(),
+		newNodesCmd(),
 	}
 	for _, c := range cmds {
 		c.PersistentFlags().BoolVar(&jsonFlag, "json", false, "machine-readable output")
@@ -38,18 +43,20 @@ func Commands() []*cobra.Command {
 
 func newLoginCmd() *cobra.Command {
 	var (
-		server string
-		token  string
-		name   string
-		caPath string
+		server   string
+		token    string
+		name     string
+		caPath   string
+		insecure bool
 	)
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate against a Zattera cluster",
-		Long: `Stores a context (server + token) in ~/.config/zattera/config.toml.
-Get a token from your admin or from the bootstrap output of 'zattera server --dev'.`,
+		Long: `Stores a context (server + token) in ~/.config/zattera/config.toml after
+verifying the token with WhoAmI. Get a token from your admin or from the
+bootstrap output of 'zattera server --dev'.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			p := printer()
+			p := printerFor(cmd)
 			if server == "" || token == "" {
 				return fmt.Errorf("both --server and --token are required (browser flow lands in M4)")
 			}
@@ -57,7 +64,7 @@ Get a token from your admin or from the bootstrap output of 'zattera server --de
 			if err != nil {
 				return err
 			}
-			ctx := cliconfig.Context{Server: server, Token: token}
+			ctx := cliconfig.Context{Server: server, Token: token, Insecure: insecure}
 			if caPath != "" {
 				pem, err := os.ReadFile(caPath)
 				if err != nil {
@@ -65,13 +72,33 @@ Get a token from your admin or from the bootstrap output of 'zattera server --de
 				}
 				ctx.CACertPEM = string(pem)
 			}
-			// TODO(T-11): verify the token with WhoAmI before saving.
+
+			// Verify the token BEFORE persisting anything, so a bad login never
+			// disturbs the existing config / active context.
+			client, err := apiclient.New(apiclient.Config{
+				Address: ctx.Server, Token: ctx.Token,
+				CACertPEM: []byte(ctx.CACertPEM), InsecureSkipVerify: ctx.Insecure,
+			})
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
+			rctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+			defer cancel()
+			who, err := client.Auth.WhoAmI(rctx, &emptypb.Empty{})
+			if err != nil {
+				return fmt.Errorf("login failed: %w", apiError(err))
+			}
+
 			cfg.Contexts[name] = ctx
 			cfg.CurrentContext = name
 			if err := cfg.Save(); err != nil {
 				return err
 			}
-			p.Successf("Logged in to %s (context %q)", server, name)
+			if jsonFlag {
+				return p.EmitJSON(who.GetUser())
+			}
+			p.Successf("Logged in to %s as %s (context %q)", server, who.GetUser().GetEmail(), name)
 			return nil
 		},
 	}
@@ -79,6 +106,7 @@ Get a token from your admin or from the bootstrap output of 'zattera server --de
 	cmd.Flags().StringVar(&token, "token", "", "API token")
 	cmd.Flags().StringVar(&name, "context", "default", "context name")
 	cmd.Flags().StringVar(&caPath, "ca-cert", "", "path to the cluster CA certificate (self-signed/dev clusters)")
+	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification (dev only)")
 	return cmd
 }
 
@@ -87,7 +115,7 @@ func newContextCmd() *cobra.Command {
 		Use:   "context",
 		Short: "Show or switch CLI contexts",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			p := printer()
+			p := printerFor(cmd)
 			cfg, err := cliconfig.Load()
 			if err != nil {
 				return err
@@ -123,7 +151,7 @@ func newContextCmd() *cobra.Command {
 			if err := cfg.Save(); err != nil {
 				return err
 			}
-			printer().Successf("Switched to context %q", args[0])
+			printerFor(cmd).Successf("Switched to context %q", args[0])
 			return nil
 		},
 	}

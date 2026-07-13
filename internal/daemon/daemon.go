@@ -9,17 +9,30 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
+	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/config"
+	"github.com/zattera-dev/zattera/internal/daemon/api"
+	"github.com/zattera-dev/zattera/internal/daemon/ca"
+	"github.com/zattera-dev/zattera/internal/daemon/nodeinfo"
 	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
+	"github.com/zattera-dev/zattera/internal/daemon/secrets"
+	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 	"github.com/zattera-dev/zattera/internal/state"
 )
@@ -110,12 +123,180 @@ func Run(ctx context.Context, cfg config.Config) error {
 		"dev", cfg.Dev,
 	)
 
-	// TODO(T-04..T-06): bootstrap org/admin/token, cluster CA, API server.
+	// Cluster CA (T-01): issues the API server cert and node identities.
+	authority, err := ca.LoadOrCreate(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+
+	// First-boot bootstrap (T-03): the leader creates org/admin/token/cluster
+	// key and prints the bootstrap token once. Followers skip silently.
+	// Barrier first so a freshly elected leader has applied the persisted log
+	// (the org entry) before the idempotency check — otherwise a restart would
+	// reprint the token.
+	var sealer secrets.Sealer
+	if rs.IsLeader() {
+		if err := rs.Barrier(ctx); err != nil {
+			return err
+		}
+		keyring, err := Bootstrap(ctx, rs, BootstrapOptions{Logger: log})
+		if err != nil {
+			return err
+		}
+		if keyring != nil {
+			if sealer, err = keyring.Sealer(); err != nil {
+				return err
+			}
+		}
+	}
+	// TODO(T-3x): unseal-on-restart so followers/restarts recover the sealer.
+
+	// Register this node in state (T-12): capacity, roles, os/arch. Leader only
+	// for now; joining nodes are registered by the join flow (T-17).
+	if rs.IsLeader() {
+		if err := registerLocalNode(ctx, rs, cfg, nodeID, log); err != nil {
+			log.Warn("local node registration failed", "err", err)
+		}
+	}
+
+	// Public API services (T-04 auth, T-05 projects+rbac, T-06 apps) with the
+	// auth → rbac interceptor chain. TODO(T-07): audit interceptor.
+	clk := clock.Real{}
+	authn := api.NewAuthenticator(st, rs, clk)
+	rbac := api.NewRBAC(st)
+	auditor := api.NewAuditor(st, rs, log, 0)
+	go authn.RunTokenFlusher(ctx)
+	go auditor.Run(ctx)
+
+	// Leader-forward (T-08): followers proxy mutating unary calls to the leader.
+	// Single-node/dev is always leader, so this is a no-op there.
+	forwarder := api.NewLeaderForwarder(rs.IsLeader, leaderAPIResolver(rs, st, cfg), leaderDialOpts(authority), log)
+	go func() {
+		for range rs.LeaderCh() {
+			forwarder.Invalidate()
+		}
+	}()
+
+	apiSrv, err := api.New(api.Options{
+		CA:             authority,
+		Listen:         cfg.API.Listen,
+		Logger:         log,
+		DNSNames:       serverDNSNames(cfg),
+		IPs:            serverIPs(),
+		AuthService:    api.NewAuthServer(st, rs, clk),
+		ProjectService: api.NewProjectServer(st, rs, clk, rbac),
+		AppService:     api.NewAppServer(st, rs, clk, sealer),
+		StateService:   api.NewStateServer(st, rs, clk),
+		NodeService:    api.NewNodeServer(st, rs, clk, authority),
+		AuditService:   auditor,
+		UnaryInterceptors: []grpc.UnaryServerInterceptor{
+			forwarder.UnaryInterceptor, authn.UnaryInterceptor, rbac.UnaryInterceptor, auditor.UnaryInterceptor,
+		},
+		StreamInterceptors: []grpc.StreamServerInterceptor{authn.StreamInterceptor},
+	})
+	if err != nil {
+		return err
+	}
+	apiErr := make(chan error, 1)
+	go func() { apiErr <- apiSrv.Serve(ctx) }()
+
 	// TODO(T-16): start the agent when the node has the worker role.
 
-	<-ctx.Done()
-	log.Info("shutting down")
-	return nil
+	select {
+	case <-ctx.Done():
+		log.Info("shutting down")
+		return nil
+	case err := <-apiErr:
+		return err
+	}
+}
+
+// registerLocalNode records this node in state at boot with its detected
+// capacity and roles. Idempotent by node id; safe to re-run on restart.
+func registerLocalNode(ctx context.Context, rs *raftstore.Store, cfg config.Config, nodeID string, log *slog.Logger) error {
+	capacity := nodeinfo.Detect(cfg.DataDir, log)
+	var roles []zatterav1.NodeRole
+	if cfg.HasRole(config.RoleControl) {
+		roles = append(roles, zatterav1.NodeRole_NODE_ROLE_CONTROL)
+	}
+	if cfg.HasRole(config.RoleWorker) {
+		roles = append(roles, zatterav1.NodeRole_NODE_ROLE_WORKER)
+	}
+	now := timestamppb.Now()
+	node := &zatterav1.Node{
+		Meta:           &zatterav1.Meta{Id: nodeID, CreatedAt: now, UpdatedAt: now},
+		Name:           cfg.NodeName,
+		Roles:          roles,
+		Status:         zatterav1.NodeStatus_NODE_STATUS_ALIVE,
+		Schedulable:    true,
+		Capacity:       &zatterav1.ResourceLimits{CpuMillis: capacity.CPUMillis, MemoryMb: capacity.MemoryMB},
+		CapacityDiskMb: capacity.DiskMB,
+		OsArch:         runtime.GOOS + "/" + runtime.GOARCH,
+	}
+	// Preserve creation time if already registered.
+	if existing, ok := rs.State().Node(nodeID); ok {
+		node.GetMeta().CreatedAt = existing.GetMeta().GetCreatedAt()
+	}
+	return rs.Apply(ctx, &clusterv1.Command{
+		RequestId: ids.New(),
+		Actor:     "system:node-register",
+		Time:      timestamppb.Now(),
+		Mutation:  &clusterv1.Command_PutNode{PutNode: &clusterv1.PutNode{Node: node}},
+	})
+}
+
+// serverDNSNames returns the SANs for the API server cert: localhost, the
+// cluster domain and per-app wildcard when a domain is configured.
+func serverDNSNames(cfg config.Config) []string {
+	names := []string{"localhost"}
+	if cfg.Domain != "" {
+		names = append(names, cfg.Domain, "*."+cfg.Domain)
+	}
+	return names
+}
+
+// serverIPs returns the IP SANs. 127.0.0.1 is always present (the gateway
+// dials the public port over loopback); the mesh IP is added in T-19.
+func serverIPs() []net.IP {
+	return []net.IP{net.ParseIP("127.0.0.1")}
+}
+
+// leaderAPIResolver maps the current raft leader to its API address for
+// leader-forwarding. Returns "" when this node is the leader. The multi-node
+// mesh mapping is exercised once nodes carry advertised endpoints (T-19/T-22).
+func leaderAPIResolver(rs *raftstore.Store, st *state.Store, cfg config.Config) func() (string, error) {
+	_, apiPort, err := net.SplitHostPort(cfg.API.Listen)
+	if err != nil || apiPort == "" {
+		apiPort = "8443"
+	}
+	return func() (string, error) {
+		if rs.IsLeader() {
+			return "", nil
+		}
+		transportAddr, id := rs.LeaderAddr()
+		if transportAddr == "" || id == "" {
+			return "", fmt.Errorf("daemon: leader unknown")
+		}
+		if n, ok := st.Node(id); ok {
+			for _, ep := range n.GetPublicEndpoints() {
+				if host, _, e := net.SplitHostPort(ep); e == nil && host != "" {
+					return net.JoinHostPort(host, apiPort), nil
+				}
+			}
+		}
+		host, _, e := net.SplitHostPort(transportAddr)
+		if e != nil || host == "" {
+			return "", fmt.Errorf("daemon: cannot derive leader API host from %q", transportAddr)
+		}
+		return net.JoinHostPort(host, apiPort), nil
+	}
+}
+
+// leaderDialOpts trusts the cluster CA for the forward dial. No client cert: the
+// forwarded bearer token authenticates the original caller on the leader.
+func leaderDialOpts(authority *ca.CA) []grpc.DialOption {
+	creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: authority.Pool()})
+	return []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 }
 
 // bindLoopback turns ":7480" into "127.0.0.1:7480" for single-node mode

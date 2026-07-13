@@ -1,6 +1,14 @@
 // Package apiclient is the public Go client for the Zattera API. The CLI is
 // built on it; third parties may use it directly. It wraps a single gRPC
 // connection with bearer-token auth and typed service accessors.
+//
+// Leader forwarding: any control node accepts unary mutating calls and
+// transparently forwards them to the current raft leader (T-08), so a client
+// may target any node for these. Streaming RPCs are NOT forwarded — they are
+// served from the contacted node's local (eventually-consistent) state, or, for
+// leader-only streams, fail with codes.FailedPrecondition carrying the leader
+// address so the caller can redial it. Point streaming calls at the leader when
+// strong consistency matters.
 package apiclient
 
 import (
