@@ -1,0 +1,25 @@
+# Binaries
+/bin/
+/dist/
+zattera
+zatterad
+*.exe
+
+# Test artifacts
+coverage.out
+coverage.html
+*.test
+
+# Data dirs from local runs
+/data/
+*.db
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Env / local overrides
+.env
+.env.local
