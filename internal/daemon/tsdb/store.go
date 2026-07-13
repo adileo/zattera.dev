@@ -23,10 +23,10 @@ type Point struct {
 
 // Resolutions stored by the ring TSDB.
 const (
-	RawStep        = 15 * time.Second
-	RawRetention   = 24 * time.Hour
-	DownStep       = 5 * time.Minute
-	DownRetention  = 30 * 24 * time.Hour
+	RawStep       = 15 * time.Second
+	RawRetention  = 24 * time.Hour
+	DownStep      = 5 * time.Minute
+	DownRetention = 30 * 24 * time.Hour
 )
 
 // Store is the per-node TSDB.

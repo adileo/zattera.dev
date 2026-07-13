@@ -73,7 +73,7 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 
 // Restore implements raft.FSM: replaces all state with the snapshot's.
 func (f *FSM) Restore(rc io.ReadCloser) error {
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		return fmt.Errorf("raftstore: read snapshot: %w", err)
@@ -93,11 +93,11 @@ type fsmSnapshot struct {
 func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 	data, err := proto.Marshal(s.snap)
 	if err != nil {
-		sink.Cancel()
+		_ = sink.Cancel()
 		return err
 	}
 	if _, err := sink.Write(data); err != nil {
-		sink.Cancel()
+		_ = sink.Cancel()
 		return err
 	}
 	return sink.Close()

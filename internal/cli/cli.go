@@ -38,10 +38,10 @@ func Commands() []*cobra.Command {
 
 func newLoginCmd() *cobra.Command {
 	var (
-		server  string
-		token   string
-		name    string
-		caPath  string
+		server string
+		token  string
+		name   string
+		caPath string
 	)
 	cmd := &cobra.Command{
 		Use:   "login",

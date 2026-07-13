@@ -20,8 +20,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	internalv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
+	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 )
 
 // Kind identifies a resource collection for watch subscriptions.

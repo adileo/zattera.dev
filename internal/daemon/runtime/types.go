@@ -60,9 +60,9 @@ type Mount struct {
 
 // Resources are cgroup limits.
 type Resources struct {
-	CPUMillis  uint32 // 1000 = one core (converted to NanoCPUs)
-	MemoryMB   uint32
-	PidsLimit  int64
+	CPUMillis uint32 // 1000 = one core (converted to NanoCPUs)
+	MemoryMB  uint32
+	PidsLimit int64
 }
 
 // RestartPolicy mirrors Docker's.
@@ -76,13 +76,13 @@ const (
 
 // ContainerSpec is everything needed to create a container.
 type ContainerSpec struct {
-	Name    string
-	Image   string
-	Command []string // empty = image default
-	Env     []string // "KEY=value"
-	Labels  map[string]string
-	Ports   []PortBinding
-	Mounts  []Mount
+	Name      string
+	Image     string
+	Command   []string // empty = image default
+	Env       []string // "KEY=value"
+	Labels    map[string]string
+	Ports     []PortBinding
+	Mounts    []Mount
 	Resources Resources
 	Restart   RestartPolicy
 	// Network to attach (per project+env bridge). Empty = default bridge.
@@ -118,10 +118,10 @@ type ContainerState struct {
 
 // ContainerInfo is a normalized list entry.
 type ContainerInfo struct {
-	ID     string
-	Name   string
-	Image  string
-	Labels map[string]string
+	ID      string
+	Name    string
+	Image   string
+	Labels  map[string]string
 	Running bool
 }
 

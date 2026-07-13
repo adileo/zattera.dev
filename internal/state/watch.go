@@ -24,12 +24,12 @@ func newHub() *Hub {
 
 // Subscription receives coalesced change notifications.
 type Subscription struct {
-	hub    *Hub
-	kinds  map[Kind]struct{} // nil = all kinds
-	mu     sync.Mutex
+	hub     *Hub
+	kinds   map[Kind]struct{} // nil = all kinds
+	mu      sync.Mutex
 	pending map[Change]struct{}
-	signal chan struct{} // cap 1, level-triggered
-	closed bool
+	signal  chan struct{} // cap 1, level-triggered
+	closed  bool
 }
 
 func (h *Hub) subscribe(kinds []Kind) *Subscription {

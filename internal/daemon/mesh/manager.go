@@ -55,8 +55,8 @@ type Disabled struct{}
 
 func NewDisabled() Disabled { return Disabled{} }
 
-func (Disabled) Up(context.Context, NodeConfig) error                { return nil }
+func (Disabled) Up(context.Context, NodeConfig) error                 { return nil }
 func (Disabled) ApplyPeers(context.Context, *clusterv1.PeerSet) error { return nil }
-func (Disabled) Down(context.Context) error                          { return nil }
-func (Disabled) Status() Status                                      { return Status{Enabled: false} }
-func (Disabled) PublicKey() (string, error)                          { return "", nil }
+func (Disabled) Down(context.Context) error                           { return nil }
+func (Disabled) Status() Status                                       { return Status{Enabled: false} }
+func (Disabled) PublicKey() (string, error)                           { return "", nil }

@@ -14,6 +14,6 @@ func Get(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("freeport: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	return l.Addr().(*net.TCPAddr).Port
 }

@@ -54,7 +54,7 @@ listen_port = 51999
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(path, []byte("node_nmae = \"typo\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("not_a_real_key = \"typo\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {

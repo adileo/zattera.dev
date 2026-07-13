@@ -74,7 +74,7 @@ func (f *File) Save() error {
 		return err
 	}
 	if err := toml.NewEncoder(file).Encode(f); err != nil {
-		file.Close()
+		_ = file.Close()
 		return err
 	}
 	if err := file.Close(); err != nil {

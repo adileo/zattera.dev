@@ -14,6 +14,11 @@ linters:
   settings:
     staticcheck:
       checks: ["all", "-ST1000", "-ST1003"]
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
   exclusions:
     rules:
       - path: _test\.go

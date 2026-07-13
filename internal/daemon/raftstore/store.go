@@ -47,7 +47,7 @@ type Config struct {
 	// first boot). Every listed server must bootstrap with the same set.
 	BootstrapServers []raft.Server
 	// Inmem replaces bolt/file stores with in-memory ones (tests only).
-	Inmem bool
+	Inmem  bool
 	Logger *slog.Logger
 }
 
