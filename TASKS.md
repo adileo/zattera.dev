@@ -1,4 +1,4 @@
-# Zattera — Implementation Tasks (M1 → M3)
+# Zattera — Implementation Tasks (M1 → M3, + F27 node autoprovisioning)
 
 This is the dependency-ordered implementation plan. The **foundation is already
 implemented and tested** (see "What already exists"). Work through tasks in
@@ -2038,16 +2038,275 @@ every `TODO(T-xx)` points to M4/M5 backlog entries below).
 
 ---
 
+# Phase 8 — F27: node autoprovisioning (provider drivers, Hetzner Cloud)
+
+**Exit criterion:** with a configured `burst-eu` Hetzner pool, saturating the
+cluster (pending replicas) makes the provisioner create a Hetzner server that
+cloud-init-joins as a worker within minutes; sustained idle drains and
+destroys it; `max`/budget rails hold; every provision/destroy is audited and
+eventable. All of it verified against a fake Hetzner API (real-account
+integration test optional and skipped by default).
+
+Scope note: **driver interface + Hetzner Cloud driver only.** DigitalOcean/
+AWS/Scaleway remain backlog. The core provisioner must never contain
+provider-specific logic (spec §3.14).
+
+### T-81 — NodePool model: protos, API, CLI
+Phase 8 · Depends: T-12 · Size: M
+**Files:** `api/proto/zattera/v1/provision.proto` (new),
+`api/proto/zattera/cluster/v1/fsm.proto` (additive),
+`api/proto/zattera/v1/node.proto` (additive), `api/gen` (regenerate),
+`internal/state/accessors_infra.go` (extend), `internal/daemon/raftstore/apply.go`
+(extend), `internal/daemon/api/pools.go`, `internal/cli/pools.go`, tests
+**Steps:**
+1. `provision.proto`: `NodePool{Meta, name, provider ("hetzner"), region,
+   server_type, min, max, cooldown (Duration), labels map, budget_monthly_eur
+   (double), dry_run bool, credential_id, disabled}` — mirrors spec §3.14's
+   TOML; `CloudCredential{Meta, provider, name, token EncryptedValue}`;
+   `ProvisionedMachine{Meta, pool_id, node_id, provider_machine_id,
+   provider_status, hourly_price_eur, created_at, phase enum
+   (CREATING/JOINING/ACTIVE/DRAINING/DESTROYING/FAILED)}`.
+2. `fsm.proto` (NEW oneof numbers 260-269 — additive, never renumber):
+   `PutNodePool`, `DeleteByID delete_node_pool`, `PutCloudCredential`,
+   `DeleteByID delete_cloud_credential`, `PutProvisionedMachine`,
+   `DeleteByID delete_provisioned_machine`. `node.proto`: add
+   `string pool_id = 16` to `Node` (additive).
+3. State store: three new collections with the standard Put/Delete/Get/List
+   accessors (follow the existing pattern exactly: clone-on-read, touch with
+   new Kinds `KindNodePool`, `KindCloudCredential`, `KindProvisionedMachine`)
+   + `MachinesByPool(poolID)` linear filter; extend `Snapshot` proto (new
+   field numbers 40-42) + `SnapshotProto`/`RestoreProto`/`resetLocked`.
+4. FSM dispatch: six new cases in `apply.go` (one-liners).
+5. API: new `ProvisionService` in `api.proto` (additive service): PutPool/
+   ListPools/DeletePool, PutCredential/ListCredentials/DeleteCredential
+   (token sealed server-side from a plaintext request field, admin-only in
+   the T-04 table + T-05 rbac), ListMachines. REST annotations under
+   `/v1/node-pools`, `/v1/cloud-credentials`.
+6. CLI: `zattera pools ls/set/rm` (`pools set burst-eu --provider hetzner
+   --region fsn1 --type cpx31 --min 0 --max 10 --cooldown 20m
+   --budget-eur 150 [--dry-run]`), `zattera pools machines`,
+   `zattera cloud-credentials add hetzner --token …`.
+**Gotchas:** run `make generate` and commit `api/gen`; snapshot round-trip
+test MUST be extended (internal/state) or restore silently drops the new
+collections; `min > 0` pools provision even when idle — validate `min ≤ max`,
+`max ≤ 50` hard cap; deleting a pool with live machines → refuse unless
+`--force` (machines then become unmanaged, warn loudly).
+**Tests:** unit — state accessors + snapshot round trip with the new
+collections; API CRUD + rbac (admin-only); credential token never returned
+unredacted.
+**Acceptance:** `make generate && git diff --exit-code api/gen` after commit;
+`go test ./internal/state/ ./internal/daemon/api/ -run
+'TestSnapshot|TestPools'`
+
+### T-82 — Provider driver interface + fake driver
+Phase 8 · Depends: T-81 · Size: M
+**Files:** `internal/daemon/provision/driver.go`, `fake.go`, `driver_test.go`
+**Steps:**
+1. The FROZEN interface (spec §3.14 — keep it minimal, provider-agnostic):
+   ```go
+   type MachineSpec struct {
+       Name        string            // zt-<pool>-<ulid[:8]>
+       Region      string
+       ServerType  string
+       CloudInit   string            // user-data (join script)
+       Labels      map[string]string // provider-side labels for List
+   }
+   type Machine struct {
+       ProviderID     string
+       Name           string
+       Status         string // normalized: "creating"|"running"|"deleting"|"unknown"
+       PublicIPv4     string
+       HourlyPriceEUR float64
+       Labels         map[string]string
+   }
+   type Driver interface {
+       Create(ctx context.Context, spec MachineSpec) (Machine, error)
+       Destroy(ctx context.Context, providerID string) error       // idempotent: absent = success
+       Get(ctx context.Context, providerID string) (Machine, error) // ErrMachineNotFound
+       List(ctx context.Context, labelSelector map[string]string) ([]Machine, error)
+       // PriceEURPerHour returns the hourly price for a server type in a
+       // region (budget rail); 0 with nil error = unknown, rail falls back
+       // to the price recorded at Create time.
+       PriceEURPerHour(ctx context.Context, region, serverType string) (float64, error)
+   }
+   var ErrMachineNotFound = errors.New("provision: machine not found")
+   ```
+2. Registry: `provision.OpenDriver(provider string, cred *zatterav1.CloudCredential,
+   sealer secrets.Sealer) (Driver, error)` — switch on provider name;
+   compiled-in drivers only (no plugins, spec §3.14).
+3. `fake.go`: in-memory Driver for tests — scriptable latency, create
+   failures, machines that never reach "running", quota errors; exposes
+   `Machines()` snapshot for assertions (mirror the fakeruntime style).
+**Gotchas:** the interface is consumed by the provisioner loop ONLY — no
+provider types may leak upward; Destroy must be idempotent (the reconciler
+retries); normalize provider statuses in the driver, never in the core.
+**Tests:** unit — fake driver contract self-test (create→get→list→destroy,
+not-found semantics) so every real driver can reuse the same contract test
+via a shared `RunDriverContractTest(t, driver)` helper — write that helper
+here.
+**Acceptance:** `go test ./internal/daemon/provision/`
+
+### T-83 — Hetzner Cloud driver
+Phase 8 · Depends: T-82 · Size: M
+**Files:** `internal/daemon/provision/hetzner.go`, `hetzner_test.go`
+**Steps:**
+1. Raw REST client against `https://api.hetzner.cloud/v1` (no SDK — surface
+   is 4 endpoints; follow the dnsproviders/cloudflare.go pattern): Bearer
+   token from the sealed credential; base URL injectable for tests.
+2. `Create`: `POST /servers` with `{name, server_type, image:
+   "debian-12", location: spec.Region, user_data: spec.CloudInit, labels,
+   public_net: {enable_ipv4: true, enable_ipv6: false}}`; map response
+   (`server.id` → ProviderID as decimal string, `server.public_net.ipv4.ip`,
+   `server.status`); price from the create response
+   (`server_type.prices[location].price_hourly.gross`) recorded into
+   `HourlyPriceEUR`.
+3. `Get`/`List` (`GET /servers/{id}`, `GET /servers?label_selector=k==v`
+   comma-joined), `Destroy` (`DELETE /servers/{id}`; 404 → nil),
+   `PriceEURPerHour` (`GET /server_types?name=…`, match location).
+4. Status normalization: `initializing|starting → creating`,
+   `running → running`, `deleting → deleting`, else `unknown`.
+5. Rate-limit handling: on 429 honor `Retry-After` once, then error out (the
+   reconciler retries next tick — never sleep-loop inside the driver).
+**Gotchas:** Hetzner label values are constrained (`[a-z0-9A-Z._-]`, ≤63) —
+sanitize pool names; server names must be RFC-1123 (lowercase, ≤63);
+`user_data` max 32KiB — the cloud-init template (T-84) must stay small;
+prices are strings in the API — parse as float carefully, `gross` not `net`;
+NEVER log the token (redact the Authorization header in any error paths).
+**Tests:** unit — `httptest` fake Hetzner API implementing the 4 endpoints
+(record requests, replay canned JSON from testdata/): run the T-82 contract
+test against it + assert request bodies (user_data passthrough, label
+selector encoding, 429 retry, 404-destroy idempotency). Optional real-API
+integration test behind `HCLOUD_TOKEN` env: `t.Skip` when unset — creates and
+destroys one cpx11, guarded by a `-run TestHetznerReal` name nobody types by
+accident.
+**Acceptance:** `go test ./internal/daemon/provision/ -run TestHetzner`
+
+### T-84 — Provisioner: scale-up loop + cloud-init join
+Phase 8 · Depends: T-83, T-17, T-29 · Size: L
+**Files:** `internal/daemon/provision/provisioner.go`, `cloudinit.go`,
+`pending.go`, `provisioner_test.go`; small extension in
+`internal/daemon/scheduler/scheduler.go` (pending-placement signal)
+**Steps:**
+1. Pending signal (`pending.go` + scheduler extension): when T-23's
+   evaluation cannot place replicas, record `{envID, count, constraints,
+   since}` in livestate (leader memory; cleared when placement succeeds).
+   Expose `PendingPlacements()` to the provisioner. Also compute pool-wide
+   utilization: sum of reservations / sum of ALIVE worker capacity.
+2. Provisioner loop (leader-only via `leaderrunner`, 30s Clock tick):
+   scale-up when, for ≥3 consecutive ticks: (a) pending placements exist
+   whose `constraints` are satisfiable by a pool's labels+region, or (b)
+   utilization > 85% and some pool has headroom. Pick the matching pool with
+   the lowest hourly price.
+3. Rails BEFORE any Create (evaluate in this order, emit a distinct event on
+   each refusal): pool disabled → skip; live+creating machines ≥ pool.max →
+   skip; projected monthly cost (Σ hourly_price × 730 over the pool's
+   non-destroyed machines + the candidate's price) > budget_monthly_eur →
+   skip; `dry_run` → emit `provision.dryrun` event with the full decision and
+   skip.
+4. Create path: mint a **single-use join token** (reuse T-12's creation,
+   TTL 30m, roles [worker]) → render cloud-init (`cloudinit.go`: `#cloud-config`
+   with a `runcmd` that installs Docker if absent, downloads the zattera
+   binary — URL from config `provision.binary_url`, default the GitHub
+   release for the running version — and runs `zattera server --join
+   <public-api-addr> --token <token>` with labels
+   `autoprovisioned=true,pool=<name>,provider=hetzner,region=<r>` via a
+   written config file) → `driver.Create` → `PutProvisionedMachine{CREATING}`
+   + audit entry (actor `system:provisioner`) + `provision.created` event.
+5. Machine reconciliation (same loop): CREATING machines → poll
+   `driver.Get`; provider "running" → JOINING; a Node appears with matching
+   pool label + join within 15m → link (`PutNode` with `pool_id`, machine →
+   ACTIVE); timeout (15m from create) → destroy + FAILED + event
+   `provision.join_timeout` (the single-use token is burned — expected).
+   Machines in provider but not in state (orphans, e.g. leader died between
+   Create and Put) → adopt by `List(labels)` at loop start, or destroy if
+   unknown pool.
+**Gotchas:** the join address in cloud-init must be a PUBLIC control-plane
+address (`cfg.API.AdvertiseAddr` — validate it's set for pools to work,
+refuse `pools set` otherwise with a clear error); never store the join token
+in state beyond its hash (existing T-12 semantics); Create-then-crash is THE
+correctness hazard — the orphan adoption via provider labels
+(`zattera-cluster=<cluster-id>`, `zattera-pool=<name>`) makes the loop
+self-healing, so tag every machine at Create; all durable transitions via
+Apply, poll state ephemeral in livestate; failure to provision must degrade
+gracefully — pending replicas just wait (spec §3.14), no crash, no tight
+retry (min 5m backoff per pool after a Create error).
+**Tests:** unit (fake driver + fake clock + simcluster-style state): pending
+→ create after 3 ticks; token minted single-use; rails: max, budget
+(projected math), dry-run event; join-timeout destroy; orphan adoption;
+Create error → backoff, no machine storm.
+**Acceptance:** `go test ./internal/daemon/provision/ -run TestScaleUp`
+
+### T-85 — Scale-down: cooldown drain + destroy, rails, alerts
+Phase 8 · Depends: T-84 · Size: M
+**Files:** `internal/daemon/provision/scaledown.go`, `scaledown_test.go`;
+default alert rules in `internal/daemon/notify/` (extend T-74's built-ins)
+**Steps:**
+1. Same leader loop: scale-down candidate when for the whole `cooldown`
+   window (per pool, track low-watermark since-timestamps in livestate):
+   utilization < 50% AND no pending placements AND pool has more than `min`
+   ACTIVE machines.
+2. Candidate selection: the ACTIVE autoprovisioned machine whose node has
+   the fewest RUN assignments; **ineligible**: nodes with stateful/pinned
+   volumes (any Volume.node_id == node), nodes not owned by a pool
+   (manually joined nodes are NEVER touched — assert `pool_id != ""`).
+3. Sequence (resumable via machine phase): machine → DRAINING +
+   `DrainNode` (T-29 path, migrates stateless replicas) → node DRAINED →
+   `RemoveNode` → `driver.Destroy` → DESTROYING → provider confirms gone →
+   delete machine record + audit + `provision.destroyed` event. One
+   scale-down in flight per pool at a time.
+4. Drain stuck >30m → abort scale-down (node back to schedulable, machine
+   ACTIVE, event `provision.drain_aborted`) — capacity crunches mid-drain
+   must self-cancel.
+5. Alerts: add built-in default rules `provision.join_timeout`,
+   `provision.budget_exceeded`, `provision.drain_aborted` → default channel
+   wiring like T-74's built-ins.
+**Gotchas:** leader failover mid-sequence: every step is re-derivable from
+`ProvisionedMachine.phase` + node status — write the resume switch first,
+then the happy path; never Destroy before RemoveNode succeeds (a destroyed
+machine with a live raft/node entry leaves a ghost DOWN node); cooldown
+timers live in leader memory — restart the window on failover
+(conservative, same as T-61).
+**Tests:** unit — cooldown window with fake clock; candidate excludes
+volume-pinned and manual nodes; full sequence walk incl. resume-from-phase
+after simulated failover; drain-stuck abort; min floor respected.
+**Acceptance:** `go test ./internal/daemon/provision/ -run TestScaleDown`
+
+### T-86 — Provisioning verification sweep + docs
+Phase 8 · Depends: T-84, T-85 · Size: M
+**Files:** `test/chaos/provision_test.go`,
+`docs/guides/node-autoprovisioning.md`, `paas-specification.md` (§3.14 +
+roadmap touch-up), `internal/cli/pools.go` (status polish)
+**Steps:**
+1. Chaos scenario (fake driver, simcluster 3 controls + fake worker agents):
+   saturate → machine created and "joins" (test injects the node) → work
+   places → idle → cooldown → drain → destroy; kill the leader once during
+   scale-up and once during scale-down — end state converges with zero
+   orphan machines and zero ghost nodes (assert via fake driver + state).
+2. Budget storm test: pool max 10, budget allows 2 → exactly 2 created,
+   `provision.budget_exceeded` event emitted once per window (not per tick).
+3. `zattera pools ls` shows live columns (machines active/creating, projected
+   €/month, last action); `zattera pools machines` phases.
+4. Docs page: pool setup walkthrough (credential → pool → watch it scale),
+   rails explanation, the "manually joined nodes are never touched"
+   guarantee, cost caveats. Spec: update §3.14 heading from "(F27, future)"
+   to reflect Hetzner-first availability; move the remaining providers note
+   to the roadmap.
+**Acceptance:** `go test -tags chaos ./test/chaos/ -run TestProvision
+-timeout 20m`; docs build (plain markdown, no tooling yet); spec diff
+reviewed in the PR.
+
+---
+
 # Backlog (M4/M5 — do not implement now)
 
 - **M4:** SSO/OIDC login; wildcard certs via DNS-01 (libdns providers);
   browser-based CLI login; Prometheus `/metrics` endpoint; external log
   sinks (Loki/S3); GeoDNS guidance docs; sticky-session refinements;
   pause/unpause pre-warming experiments.
-- **M5 (F27):** node autoprovisioning — provider driver interface
-  (`Create/Destroy/List` + price hints), Hetzner Cloud driver, then
-  DO/AWS/Scaleway; pool budgets/cooldowns; scale-down drain integration;
-  audited provision/destroy.
+- **M5 (F27) remainder:** the driver interface + Hetzner Cloud driver ship in
+  Phase 8 (T-81..T-86). Remaining backlog: DigitalOcean, AWS and Scaleway
+  drivers (implement against T-82's `RunDriverContractTest`); per-pool
+  provider quota hints; spot/preemptible instance support.
 
 # Dependency quick-reference
 
@@ -2062,4 +2321,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
     T-62(24,15)→T-63(26) · T-64(13)→T-65(49)→T-66(55) · T-67(53) · T-68(39,55)
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
+P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
 ```
