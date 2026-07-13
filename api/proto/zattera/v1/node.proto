@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/timestamp.proto";
+import "zattera/v1/common.proto";
+
+enum NodeRole {
+  NODE_ROLE_UNSPECIFIED = 0;
+  NODE_ROLE_CONTROL = 1;
+  NODE_ROLE_WORKER = 2;
+}
+
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_ALIVE = 1;
+  NODE_STATUS_SUSPECT = 2;  // missed heartbeats / gossip suspicion
+  NODE_STATUS_DOWN = 3;
+  NODE_STATUS_DRAINING = 4;
+  NODE_STATUS_DRAINED = 5;
+}
+
+// Node is a machine in the pool (spec §4).
+message Node {
+  Meta meta = 1;
+  string name = 2;
+  repeated NodeRole roles = 3;
+  map<string, string> labels = 4; // region, provider, arch, builder=true, ingress=true, ...
+  string mesh_ip = 5;             // stable 10.90.0.0/16 address, allocated at join
+  string wireguard_public_key = 6;
+  // Publicly reachable "host:port" UDP endpoints for WireGuard, if any.
+  repeated string public_endpoints = 7;
+  ResourceLimits capacity = 8;
+  uint32 capacity_disk_mb = 9;
+  NodeStatus status = 10;
+  bool schedulable = 11;
+  bool autoprovisioned = 12;
+  string binary_version = 13;
+  google.protobuf.Timestamp last_heartbeat_at = 14; // durable, coarse (batched)
+  string os_arch = 15; // "linux/amd64"
+}
+
+// AssignmentDesired is what the scheduler wants the agent to do.
+enum AssignmentDesired {
+  ASSIGNMENT_DESIRED_UNSPECIFIED = 0;
+  ASSIGNMENT_DESIRED_RUN = 1;
+  ASSIGNMENT_DESIRED_STOP = 2;
+}
+
+// InstanceState is the observed lifecycle of one container instance.
+enum InstanceState {
+  INSTANCE_STATE_UNSPECIFIED = 0;
+  INSTANCE_STATE_PENDING = 1;
+  INSTANCE_STATE_PULLING = 2;
+  INSTANCE_STATE_STARTING = 3;
+  INSTANCE_STATE_RUNNING = 4;   // process up, not yet passed healthcheck
+  INSTANCE_STATE_HEALTHY = 5;
+  INSTANCE_STATE_UNHEALTHY = 6;
+  INSTANCE_STATE_FAILED = 7;
+  INSTANCE_STATE_STOPPED = 8;
+}
+
+// Assignment binds one replica of a release to a node (Nomad-style
+// allocation; ADR-0004 / design §2.4). Desired fields are written by the
+// scheduler; the Observed sub-message is reported by agents and committed in
+// batched applies.
+message Assignment {
+  Meta meta = 1;
+  string node_id = 2;
+  string project_id = 3;
+  string app_id = 4;
+  string environment_id = 5;
+  string release_id = 6;
+  string deployment_id = 7;
+  AssignmentDesired desired = 8;
+  string config_hash = 9;
+  // Host ports allocated on the node's mesh IP, keyed by PortSpec.name.
+  map<string, uint32> mesh_port_bindings = 10;
+  AssignmentObserved observed = 11;
+  // One-shot job/cron run: set when this assignment is a Job execution.
+  string job_id = 12;
+}
+
+message AssignmentObserved {
+  InstanceState state = 1;
+  string container_id = 2;
+  uint32 restarts = 3;
+  int32 exit_code = 4;
+  string message = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  // Effective host ports the agent bound on the node's mesh IP, keyed by
+  // PortSpec.name. Reported by the agent after Start; the control plane merges
+  // these into Assignment.mesh_port_bindings on apply (T-15).
+  map<string, uint32> mesh_port_bindings = 7;
+}
+
+// JoinToken authorizes `zattera server --join` (spec §3.1). The secret is
+// stored hashed.
+message JoinToken {
+  Meta meta = 1;
+  string secret_hash = 2;
+  bool single_use = 3;
+  bool used = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  repeated NodeRole roles = 6; // roles the joining node may assume
+  string created_by_user_id = 7;
+}

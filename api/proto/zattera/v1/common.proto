@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Role is the RBAC role at org or project level (spec §3.13).
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_OWNER = 1;
+  ROLE_ADMIN = 2;
+  ROLE_DEVELOPER = 3;
+  ROLE_VIEWER = 4;
+}
+
+// Meta is embedded in every first-class object. `id` is a ULID string.
+message Meta {
+  string id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+// EncryptedValue is an AES-256-GCM sealed value (spec §3.13). The data key is
+// cluster-wide; key_version supports future rotation.
+message EncryptedValue {
+  bytes nonce = 1;
+  bytes ciphertext = 2;
+  uint32 key_version = 3;
+}
+
+// ResourceLimits are per-instance reservations used by placement and cgroups.
+message ResourceLimits {
+  uint32 cpu_millis = 1; // 1000 = one core
+  uint32 memory_mb = 2;
+}
+
+// Event is a platform event (deploy finished, node down, cert renewed, ...).
+// Events feed the alert engine and `zattera events`.
+message Event {
+  Meta meta = 1;
+  string kind = 2;    // e.g. "deploy.succeeded", "node.down", "cert.renew_failed"
+  string severity = 3; // "info" | "warning" | "error"
+  string project_id = 4;
+  string app_id = 5;
+  string environment_id = 6;
+  string node_id = 7;
+  string message = 8;
+  map<string, string> fields = 9;
+}
+
+// AuditEntry records every mutating API call (spec §3.13).
+message AuditEntry {
+  Meta meta = 1;
+  string actor_user_id = 2;
+  string actor_token_id = 3;
+  string method = 4; // full gRPC method name
+  string project_id = 5;
+  string resource_id = 6;
+  string outcome = 7; // "ok" or the gRPC error code string
+  string request_summary = 8; // compact human-readable summary, never secrets
+  string remote_addr = 9;
+}

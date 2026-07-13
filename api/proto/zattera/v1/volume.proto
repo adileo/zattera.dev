@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/timestamp.proto";
+import "zattera/v1/common.proto";
+
+// Volume is a named Docker volume pinned to one node (spec §3.8).
+message Volume {
+  Meta meta = 1;
+  string project_id = 2;
+  string environment_id = 3;
+  string name = 4;    // unique within (project, environment)
+  string node_id = 5; // pinned node
+  VolumeStatus status = 6;
+  // Fencing lease (spec §9.1): only the lease holder may mount the volume.
+  VolumeLease lease = 7;
+  SnapshotPolicy snapshot_policy = 8;
+  uint64 size_bytes_observed = 9;
+}
+
+enum VolumeStatus {
+  VOLUME_STATUS_UNSPECIFIED = 0;
+  VOLUME_STATUS_ACTIVE = 1;
+  VOLUME_STATUS_NODE_LOST = 2; // pinned node is down; stateful service stopped by design
+  VOLUME_STATUS_RESTORING = 3;
+}
+
+message VolumeLease {
+  string node_id = 1;
+  string assignment_id = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message SnapshotPolicy {
+  string schedule = 1;   // cron expression; "" = manual only
+  string pre_hook = 2;   // command exec'd in the service container before snapshot (e.g. pg_dump)
+  uint32 keep_last = 3;  // retention, default 7
+}
+
+// VolumeSnapshot is one point-in-time S3 snapshot (spec §3.11).
+message VolumeSnapshot {
+  Meta meta = 1;
+  string volume_id = 2;
+  string manifest_key = 3; // S3 key of the snapshot manifest
+  uint64 logical_size_bytes = 4;
+  uint64 uploaded_bytes = 5; // after dedup
+  SnapshotStatus status = 6;
+  string error = 7;
+}
+
+enum SnapshotStatus {
+  SNAPSHOT_STATUS_UNSPECIFIED = 0;
+  SNAPSHOT_STATUS_RUNNING = 1;
+  SNAPSHOT_STATUS_COMPLETE = 2;
+  SNAPSHOT_STATUS_FAILED = 3;
+}
+
+// BackupConfig is the cluster-wide S3 backup destination (spec §3.11).
+message BackupConfig {
+  string s3_endpoint = 1;
+  string s3_bucket = 2;
+  string s3_prefix = 3;
+  string s3_region = 4;
+  EncryptedValue s3_access_key = 5;
+  EncryptedValue s3_secret_key = 6;
+  string schedule = 7; // cron for full state backups
+  bool verify = 8;     // periodic restore-test job (spec §3.11)
+}
+
+// BackupRecord is one completed backup run.
+message BackupRecord {
+  Meta meta = 1;
+  string kind = 2; // "state" | "full"
+  string manifest_key = 3;
+  uint64 bytes = 4;
+  string status = 5; // "complete" | "failed"
+  string error = 6;
+}

@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "zattera/v1/common.proto";
+import "zattera/v1/service.proto";
+
+// App is a deployable application inside a project (spec §4). One app = one
+// service (one container image); its name is the service name in internal DNS
+// (<app>.<env>.<project>.internal).
+message App {
+  Meta meta = 1;
+  string project_id = 2;
+  string name = 3; // DNS-safe: [a-z0-9-]
+  BuildConfig build = 4;
+  GitHubConfig github = 5;
+}
+
+// BuildConfig mirrors [build] in zattera.toml.
+message BuildConfig {
+  BuildType type = 1;
+  string dockerfile_path = 2; // default "Dockerfile"
+  string context_dir = 3;     // default "."
+  map<string, string> build_args = 4;
+}
+
+enum BuildType {
+  BUILD_TYPE_UNSPECIFIED = 0; // auto-detect: Dockerfile if present, else nixpacks
+  BUILD_TYPE_NIXPACKS = 1;
+  BUILD_TYPE_DOCKERFILE = 2;
+  BUILD_TYPE_IMAGE = 3; // pre-built image reference, no build
+}
+
+// GitHubConfig wires push-to-deploy (spec F9).
+message GitHubConfig {
+  string repo = 1; // "owner/name"
+  int64 installation_id = 2;
+  string webhook_secret_id = 3; // reference to an encrypted secret
+  // branch → environment name, e.g. {"main": "production", "develop": "staging"}
+  map<string, string> branch_environments = 4;
+  bool preview_environments = 5; // PR → preview-<n> ephemeral envs (M3)
+}
+
+enum EnvironmentType {
+  ENVIRONMENT_TYPE_UNSPECIFIED = 0;
+  ENVIRONMENT_TYPE_PRODUCTION = 1;
+  ENVIRONMENT_TYPE_STAGING = 2;
+  ENVIRONMENT_TYPE_PREVIEW = 3;
+}
+
+// Environment is a deployment target of an app (production, staging,
+// preview-*). It owns the service spec, env vars, domains and releases.
+message Environment {
+  Meta meta = 1;
+  string app_id = 2;
+  string project_id = 3; // denormalized for indexing
+  string name = 4;       // "production", "staging", "preview-42"
+  EnvironmentType type = 5;
+  ServiceSpec service = 6;
+  // The currently promoted release. Changed atomically by PromoteRelease —
+  // this is the red/green traffic switch (spec §3.7).
+  string active_release_id = 7;
+  // Monotonic generation bumped on every routing-relevant change; proxies use
+  // it to order RouteSnapshots.
+  uint64 route_generation = 8;
+  // Preview environments only:
+  int64 preview_pr_number = 9;
+  google.protobuf.Timestamp preview_expires_at = 10;
+  // Effective replica count last decided by the autoscaler (within
+  // service.replicas min/max). 0 = follow replicas.min.
+  uint32 effective_replicas = 11;
+  google.protobuf.Duration idle_timeout = 12; // scale-to-zero idle window
+}
+
+// EnvVar is one environment variable. All values are encrypted at rest.
+message EnvVar {
+  string environment_id = 1;
+  string key = 2;
+  EncryptedValue value = 3;
+}

@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/duration.proto";
+import "zattera/v1/common.proto";
+
+// ServiceSpec is the desired runtime shape of an app in one environment
+// (spec §4). It is versioned into a Release via config_hash.
+message ServiceSpec {
+  ReplicaRange replicas = 1;
+  Autoscale autoscale = 2;
+  ResourceLimits resources = 3;
+  repeated PortSpec ports = 4;
+  HealthCheck healthcheck = 5;
+  bool scale_to_zero = 6;
+  uint32 max_concurrency = 7; // serverless mode: target in-flight per replica (0 = off)
+  bool stateful = 8;          // exactly-one, volume-pinned, stop-then-start deploys
+  repeated VolumeMount volumes = 9;
+  repeated CronSpec cron = 10;
+  google.protobuf.Duration stop_grace = 11; // SIGTERM → SIGKILL window, default 10s
+  string command = 12;                      // override image CMD (shell form)
+  map<string, string> placement_constraints = 13; // node label selectors, e.g. {"region": "eu"}
+}
+
+message ReplicaRange {
+  uint32 min = 1;
+  uint32 max = 2;
+}
+
+// Autoscale targets; zero values mean "not used" (spec F7).
+message Autoscale {
+  uint32 target_cpu_percent = 1;
+  uint32 target_memory_percent = 2;
+  uint32 target_rps_per_replica = 3;
+}
+
+message PortSpec {
+  string name = 1;         // "http" (default), "db", ...
+  uint32 container_port = 2;
+  Protocol protocol = 3;
+  // If set, the ingress proxies expose this port publicly as raw L4 TCP
+  // passthrough (spec F5). HTTP traffic never sets this.
+  uint32 public_l4_port = 4;
+}
+
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0; // treated as HTTP
+  PROTOCOL_HTTP = 1;
+  PROTOCOL_TCP = 2;
+  PROTOCOL_UDP = 3;
+}
+
+message HealthCheck {
+  HealthCheckType type = 1;
+  string path = 2;              // HTTP only
+  uint32 port = 3;              // defaults to first port
+  string command = 4;           // exec only
+  google.protobuf.Duration interval = 5;     // default 10s
+  google.protobuf.Duration timeout = 6;      // default 5s
+  google.protobuf.Duration grace_period = 7; // default 60s: time to first success
+  uint32 unhealthy_threshold = 8;            // consecutive failures, default 3
+}
+
+enum HealthCheckType {
+  HEALTH_CHECK_TYPE_UNSPECIFIED = 0; // HTTP if the service has an HTTP port, else TCP
+  HEALTH_CHECK_TYPE_HTTP = 1;
+  HEALTH_CHECK_TYPE_TCP = 2;
+  HEALTH_CHECK_TYPE_EXEC = 3;
+}
+
+message VolumeMount {
+  string volume_name = 1; // references Volume.name within the same (project, env)
+  string mount_path = 2;
+}
+
+// CronSpec declares a scheduled one-shot run of the app image (spec F22).
+message CronSpec {
+  string name = 1;
+  string schedule = 2; // 5-field cron expression
+  string command = 3;
+  ConcurrencyPolicy concurrency = 4;
+  uint32 max_retries = 5;
+}
+
+enum ConcurrencyPolicy {
+  CONCURRENCY_POLICY_UNSPECIFIED = 0; // forbid
+  CONCURRENCY_POLICY_FORBID = 1;
+  CONCURRENCY_POLICY_REPLACE = 2;
+  CONCURRENCY_POLICY_ALLOW = 3;
+}

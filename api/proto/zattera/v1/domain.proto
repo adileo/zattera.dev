@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "zattera/v1/common.proto";
+
+// Domain routes a public hostname (+ optional path prefix) to an environment
+// (spec F5/F6). TLS is provisioned automatically via ACME HTTP-01.
+message Domain {
+  Meta meta = 1;
+  string project_id = 2;
+  string app_id = 3;
+  string environment_id = 4;
+  string hostname = 5;    // "api.example.com"
+  string path_prefix = 6; // "" = all paths
+  Middleware middleware = 7;
+  CertStatus cert_status = 8;
+  // True for the auto-generated <app>-<env>.<cluster-domain> hostname.
+  bool cluster_subdomain = 9;
+  string port_name = 10; // ServiceSpec port to route to; default first HTTP port
+}
+
+enum CertStatus {
+  CERT_STATUS_UNSPECIFIED = 0;
+  CERT_STATUS_PENDING = 1;
+  CERT_STATUS_ISSUED = 2;
+  CERT_STATUS_FAILED = 3;
+}
+
+// Middleware are built-in per-route features (spec §3.5).
+message Middleware {
+  bool redirect_https = 1;   // default true
+  bool compress = 2;         // gzip/brotli
+  BasicAuth basic_auth = 3;
+  repeated string ip_allowlist = 4; // CIDRs
+  uint64 max_body_bytes = 5;        // 0 = unlimited
+  bool sticky_sessions = 6;         // cookie-based (M3)
+}
+
+message BasicAuth {
+  string username = 1;
+  string password_hash = 2; // bcrypt/argon2id PHC string
+}
+
+// DNSProviderConfig stores credentials for DNS automation (spec §3.6, M3).
+message DNSProviderConfig {
+  Meta meta = 1;
+  string type = 2; // "cloudflare" | "route53" | "hetzner" | "digitalocean"
+  string name = 3;
+  map<string, EncryptedValue> credentials = 4;
+  repeated string zones = 5; // domains this provider manages
+}

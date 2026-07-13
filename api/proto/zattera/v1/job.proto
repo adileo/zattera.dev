@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/timestamp.proto";
+import "zattera/v1/common.proto";
+
+// Job is a one-shot container run from an app's image (spec §3.12).
+// Cron-triggered runs create Jobs with cron_name set.
+message Job {
+  Meta meta = 1;
+  string project_id = 2;
+  string app_id = 3;
+  string environment_id = 4;
+  string release_id = 5; // image source; empty = active release at creation
+  string command = 6;
+  string cron_name = 7; // "" for `zattera jobs run`
+  JobStatus status = 8;
+  string node_id = 9;
+  int32 exit_code = 10;
+  uint32 attempt = 11;
+  uint32 max_retries = 12;
+  string error = 13;
+  google.protobuf.Timestamp started_at = 14;
+  google.protobuf.Timestamp finished_at = 15;
+  string created_by_user_id = 16;
+}
+
+enum JobStatus {
+  JOB_STATUS_UNSPECIFIED = 0;
+  JOB_STATUS_QUEUED = 1;
+  JOB_STATUS_RUNNING = 2;
+  JOB_STATUS_SUCCEEDED = 3;
+  JOB_STATUS_FAILED = 4;
+  JOB_STATUS_RETRYING = 5;
+  JOB_STATUS_CANCELED = 6;
+}

@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+// Mesh coordination (ADR-0003). Served by control nodes; nodes keep a
+// long-lived WatchPeers stream and re-open it on control failover.
+
+package zattera.cluster.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service MeshService {
+  // WatchPeers streams the full peer set on every change (no deltas).
+  rpc WatchPeers(WatchPeersRequest) returns (stream PeerSet);
+  // ReportObservedEndpoint: disco/STUN-lite result — control records the UDP
+  // source address it observed for a node and folds it into PeerSets.
+  rpc ReportObservedEndpoint(ReportObservedEndpointRequest) returns (ReportObservedEndpointResponse);
+}
+
+message WatchPeersRequest {
+  string node_id = 1;
+}
+
+// PeerSet is the complete WireGuard peer configuration for one node.
+message PeerSet {
+  uint64 version = 1;
+  repeated Peer peers = 2;
+  // Phase A hub-and-spoke: if true, this node routes the whole mesh CIDR via
+  // its control peers instead of per-peer /32 AllowedIPs.
+  bool hub_and_spoke = 3;
+}
+
+message Peer {
+  string node_id = 1;
+  string wireguard_public_key = 2;
+  string mesh_ip = 3;
+  // Candidate "host:port" UDP endpoints, best first (configured public
+  // endpoints, then disco-observed reflexive addresses).
+  repeated string endpoints = 4;
+  uint32 persistent_keepalive_seconds = 5; // 25 for NAT'd nodes, 0 otherwise
+  bool is_control = 6;
+  // AllowedIPs for this peer. Usually ["<mesh_ip>/32"]; control peers in
+  // hub-and-spoke mode carry ["10.90.0.0/16"].
+  repeated string allowed_ips = 7;
+  bool relay_capable = 8; // Phase D: peer runs a TCP relay
+}
+
+message ReportObservedEndpointRequest {
+  string node_id = 1;
+  string observed_endpoint = 2; // "ip:port" seen by the disco echo listener
+  google.protobuf.Timestamp observed_at = 3;
+}
+
+message ReportObservedEndpointResponse {
+  bool accepted = 1;
+}

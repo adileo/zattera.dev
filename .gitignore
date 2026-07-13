@@ -1,8 +1,9 @@
-# Binaries
+# Binaries (repo-root build outputs only; anchored so they don't match
+# api/proto/zattera, api/gen/zattera, or other nested paths)
 /bin/
 /dist/
-zattera
-zatterad
+/zattera
+/zatterad
 *.exe
 
 # Test artifacts

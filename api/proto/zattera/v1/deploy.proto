@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/timestamp.proto";
+import "zattera/v1/app.proto";
+import "zattera/v1/common.proto";
+import "zattera/v1/service.proto";
+
+// Release is an immutable (image, config) pair per environment (spec §4).
+// Version numbers are per-environment and monotonic (v1, v2, ...).
+message Release {
+  Meta meta = 1;
+  string environment_id = 2;
+  string app_id = 3;
+  string project_id = 4;
+  uint64 version = 5;
+  string image_ref = 6;    // fully qualified, digest-pinned once built
+  string config_hash = 7;  // hash of ServiceSpec + env var keys/versions
+  ServiceSpec service = 8; // frozen copy of the spec at release time
+  ReleaseSource source = 9;
+  string created_by_user_id = 10;
+}
+
+message ReleaseSource {
+  string git_sha = 1;
+  string git_branch = 2;
+  string git_message = 3;
+  string tarball_digest = 4; // CLI uploads
+  string build_id = 5;       // empty for pre-built images
+}
+
+// DeploymentPhase is the red/green state machine (spec §3.7). Every
+// transition is a Raft apply so a new leader resumes where the old one died.
+enum DeploymentPhase {
+  DEPLOYMENT_PHASE_UNSPECIFIED = 0;
+  DEPLOYMENT_PHASE_PENDING = 1;
+  DEPLOYMENT_PHASE_BUILDING = 2;      // only for source deploys
+  DEPLOYMENT_PHASE_PLACING = 3;       // green assignments created
+  DEPLOYMENT_PHASE_STARTING = 4;      // waiting for running
+  DEPLOYMENT_PHASE_HEALTHCHECKING = 5;
+  DEPLOYMENT_PHASE_PROMOTING = 6;     // atomic traffic switch
+  DEPLOYMENT_PHASE_DRAINING_OLD = 7;  // blue kept warm for rollback_window
+  DEPLOYMENT_PHASE_SUCCEEDED = 8;
+  DEPLOYMENT_PHASE_FAILED = 9;        // traffic never moved
+  DEPLOYMENT_PHASE_ROLLED_BACK = 10;
+  DEPLOYMENT_PHASE_SUPERSEDED = 11;   // a newer deployment for the same env appeared
+}
+
+// Deployment tracks one rollout of a Release (spec §4, §3.7).
+message Deployment {
+  Meta meta = 1;
+  string environment_id = 2;
+  string app_id = 3;
+  string project_id = 4;
+  string release_id = 5;
+  string previous_release_id = 6;
+  DeploymentPhase phase = 7;
+  string error = 8;
+  bool is_rollback = 9;
+  string build_id = 10; // set while phase == BUILDING
+  google.protobuf.Timestamp promoted_at = 11;
+  google.protobuf.Timestamp drain_deadline = 12; // promoted_at + rollback_window
+  string created_by_user_id = 13;
+}
+
+// Build tracks one image build (spec §3.4). Build logs live in the log store
+// under the build id.
+message Build {
+  Meta meta = 1;
+  string app_id = 2;
+  string project_id = 3;
+  string environment_id = 4;
+  BuildType type = 5;
+  BuildStatus status = 6;
+  string node_id = 7;      // builder node
+  string image_ref = 8;    // output, digest-pinned
+  string tarball_digest = 9;
+  string git_sha = 10;
+  string error = 11;
+  google.protobuf.Timestamp started_at = 12;
+  google.protobuf.Timestamp finished_at = 13;
+}
+
+enum BuildStatus {
+  BUILD_STATUS_UNSPECIFIED = 0;
+  BUILD_STATUS_QUEUED = 1;
+  BUILD_STATUS_RUNNING = 2;
+  BUILD_STATUS_SUCCEEDED = 3;
+  BUILD_STATUS_FAILED = 4;
+  BUILD_STATUS_CANCELED = 5;
+}

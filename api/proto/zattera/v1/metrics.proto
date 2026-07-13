@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// StatsQuery reads historical series from the embedded TSDB (spec §3.10).
+message StatsQuery {
+  // Scope: exactly one of node_id / environment_id / app_id, or empty for cluster.
+  string node_id = 1;
+  string app_id = 2;
+  string environment_id = 3;
+  // Metrics: "cpu_percent", "memory_bytes", "memory_percent", "disk_bytes",
+  // "net_rx_bytes", "net_tx_bytes", "rps", "latency_p50_ms", "latency_p99_ms",
+  // "error_rate", "inflight". Empty = a sensible default set.
+  repeated string metrics = 4;
+  google.protobuf.Timestamp since = 5;
+  google.protobuf.Timestamp until = 6;
+  // Requested resolution in seconds; the server picks the nearest stored one
+  // (15s raw / 300s downsampled).
+  uint32 step_seconds = 7;
+}
+
+message Series {
+  string metric = 1;
+  map<string, string> labels = 2; // node, app, env, instance
+  repeated Point points = 3;
+}
+
+message Point {
+  int64 time_unix_ms = 1;
+  double value = 2;
+}
+
+message StatsResponse {
+  repeated Series series = 1;
+}

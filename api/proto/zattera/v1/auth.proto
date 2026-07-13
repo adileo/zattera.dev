@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/timestamp.proto";
+import "zattera/v1/common.proto";
+
+enum TokenKind {
+  TOKEN_KIND_UNSPECIFIED = 0;
+  TOKEN_KIND_PERSONAL = 1; // long-lived PAT
+  TOKEN_KIND_SESSION = 2;  // short-lived, from Login
+}
+
+// Token is an API token. Only the SHA-256 hash is stored; the plaintext is
+// returned exactly once at creation.
+message Token {
+  Meta meta = 1;
+  string user_id = 2;
+  string name = 3;
+  string secret_hash = 4; // hex SHA-256; cleared in API responses
+  TokenKind kind = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  google.protobuf.Timestamp last_used_at = 7;
+}
+
+// ClusterKeyMaterial seals the cluster data key (spec §3.13, design §2.10).
+// KEK = argon2id(recovery passphrase, salt); sealed_data_key = AESGCM(KEK, data key).
+message ClusterKeyMaterial {
+  bytes sealed_data_key = 1;
+  bytes nonce = 2;
+  bytes argon2_salt = 3;
+  uint32 argon2_time = 4;
+  uint32 argon2_memory_kib = 5;
+  uint32 argon2_threads = 6;
+  uint32 key_version = 7;
+}

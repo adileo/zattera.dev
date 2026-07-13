@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+// Route distribution: control builds a full RouteSnapshot from state on every
+// relevant change (debounced ~200ms) and streams it to every node's proxy and
+// internal-DNS resolver. Full snapshots, never deltas (design §2.5). Proxies
+// persist the last snapshot to disk and keep serving it while the control
+// plane is unreachable (spec §7).
+
+package zattera.cluster.v1;
+
+import "zattera/v1/domain.proto";
+
+service RouteService {
+  rpc WatchRoutes(WatchRoutesRequest) returns (stream RouteSnapshot);
+}
+
+message WatchRoutesRequest {
+  string node_id = 1;
+  uint64 have_version = 2; // skip resend if unchanged across reconnect
+}
+
+message RouteSnapshot {
+  uint64 version = 1;
+  repeated HTTPRoute http_routes = 2;
+  repeated L4Route l4_routes = 3;
+  repeated InternalService internal_services = 4;
+  // Hostnames the ACME on-demand policy may issue certificates for.
+  repeated string cert_hosts = 5;
+}
+
+message Endpoint {
+  string assignment_id = 1;
+  string node_id = 2;
+  // "ip:port" — container IP for node-local replicas, mesh IP + published
+  // port for remote ones. The proxy prefers local endpoints at equal load.
+  string addr = 3;
+  bool healthy = 4;
+  bool local_hint_node_id_matches = 5; // convenience for the receiving node
+}
+
+message HTTPRoute {
+  string hostname = 1;
+  string path_prefix = 2;
+  string project_id = 3;
+  string app_id = 4;
+  string environment_id = 5;
+  string app_name = 6;
+  string environment_name = 7;
+  zattera.v1.Middleware middleware = 8;
+  repeated Endpoint endpoints = 9;
+  // Scale-to-zero: when true and endpoints is empty, the proxy holds the
+  // request and calls Activate (design §2.4).
+  bool scale_to_zero = 10;
+  uint32 max_concurrency = 11; // serverless per-replica concurrency cap (0 = off)
+  uint64 route_generation = 12;
+}
+
+message L4Route {
+  uint32 public_port = 1;
+  string protocol = 2; // "tcp"
+  string environment_id = 3;
+  repeated Endpoint endpoints = 4;
+}
+
+// InternalService feeds the per-node DNS resolver and VIP L4 proxy (F26).
+message InternalService {
+  string fqdn = 1; // "<app>.<env>.<project>.internal."
+  string project_id = 2;
+  string environment_id = 3;
+  string vip = 4; // 10.97.0.0/16
+  repeated InternalPort ports = 5;
+}
+
+message InternalPort {
+  string name = 1;
+  uint32 port = 2; // VIP listen port == container port
+  string protocol = 3; // "tcp" | "udp"
+  repeated Endpoint endpoints = 4;
+}
+
+// ActivatorService is served by control nodes: proxies call Activate when a
+// request arrives for a scaled-to-zero service. Idempotent; control
+// singleflights concurrent activations.
+service ActivatorService {
+  rpc Activate(ActivateRequest) returns (ActivateResponse);
+}
+
+message ActivateRequest {
+  string environment_id = 1;
+  string node_id = 2; // requesting proxy's node
+}
+
+message ActivateResponse {
+  bool accepted = 1;
+}

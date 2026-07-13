@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package zattera.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// LogSelector picks which streams to read. Control fans the query out to the
+// nodes running matching instances and k-way merges by timestamp (spec §3.10).
+message LogSelector {
+  string project_id = 1;
+  string app_id = 2;
+  string environment_id = 3; // "" = all envs of the app
+  string deployment_id = 4;  // build+runtime logs of one deployment
+  string build_id = 5;       // build logs only
+  string job_id = 6;         // job run logs
+  string instance_id = 7;    // one specific assignment
+}
+
+message LogQuery {
+  LogSelector selector = 1;
+  google.protobuf.Timestamp since = 2;
+  google.protobuf.Timestamp until = 3;
+  uint32 limit = 4;  // max lines for non-follow queries (default 1000)
+  bool follow = 5;   // stream live after catching up
+}
+
+message LogLine {
+  google.protobuf.Timestamp time = 1;
+  string instance_id = 2;
+  string app_name = 3;
+  string environment_name = 4;
+  LogSource source = 5;
+  string line = 6;
+}
+
+enum LogSource {
+  LOG_SOURCE_UNSPECIFIED = 0;
+  LOG_SOURCE_STDOUT = 1;
+  LOG_SOURCE_STDERR = 2;
+  LOG_SOURCE_BUILD = 3;
+  LOG_SOURCE_SYSTEM = 4; // platform events about the instance (restarts, OOM)
+}

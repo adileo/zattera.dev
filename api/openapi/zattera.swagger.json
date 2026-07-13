@@ -2473,6 +2473,14 @@
         "updatedAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "meshPortBindings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": "Effective host ports the agent bound on the node's mesh IP, keyed by\nPortSpec.name. Reported by the agent after Start; the control plane merges\nthese into Assignment.mesh_port_bindings on apply (T-15)."
         }
       }
     },

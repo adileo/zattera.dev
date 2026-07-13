@@ -1,0 +1,912 @@
+syntax = "proto3";
+
+// Public API surface (spec §3.13 / F10). Every service here is exposed both
+// as gRPC and as REST/JSON via grpc-gateway on the same TLS port. The CLI is
+// a pure client of this API — no hidden channels.
+//
+// Conventions:
+//   - Every project-scoped request message carries `project_id`; the RBAC
+//     interceptor relies on this (design §2.2). Do not deviate.
+//   - List responses are plain repeated fields; pagination is deferred until
+//     a resource can realistically exceed a few thousand entries.
+//   - Mutations return the mutated object as committed by the FSM.
+
+package zattera.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "zattera/v1/alert.proto";
+import "zattera/v1/app.proto";
+import "zattera/v1/auth.proto";
+import "zattera/v1/common.proto";
+import "zattera/v1/deploy.proto";
+import "zattera/v1/domain.proto";
+import "zattera/v1/job.proto";
+import "zattera/v1/logs.proto";
+import "zattera/v1/metrics.proto";
+import "zattera/v1/node.proto";
+import "zattera/v1/project.proto";
+import "zattera/v1/service.proto";
+import "zattera/v1/volume.proto";
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+service AuthService {
+  // Login exchanges email+password for a short-lived session token.
+  rpc Login(LoginRequest) returns (LoginResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/login"
+      body: "*"
+    };
+  }
+  rpc WhoAmI(google.protobuf.Empty) returns (WhoAmIResponse) {
+    option (google.api.http) = {get: "/v1/auth/whoami"};
+  }
+  rpc CreateToken(CreateTokenRequest) returns (CreateTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/tokens"
+      body: "*"
+    };
+  }
+  rpc ListTokens(google.protobuf.Empty) returns (ListTokensResponse) {
+    option (google.api.http) = {get: "/v1/auth/tokens"};
+  }
+  rpc RevokeToken(RevokeTokenRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/auth/tokens/{token_id}"};
+  }
+  rpc CreateUser(CreateUserRequest) returns (User) {
+    option (google.api.http) = {
+      post: "/v1/users"
+      body: "*"
+    };
+  }
+  rpc ListUsers(google.protobuf.Empty) returns (ListUsersResponse) {
+    option (google.api.http) = {get: "/v1/users"};
+  }
+}
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  string token = 1; // plaintext session token, shown once
+  User user = 2;
+}
+
+message WhoAmIResponse {
+  User user = 1;
+  repeated ProjectMember memberships = 2;
+}
+
+message CreateTokenRequest {
+  string name = 1;
+  google.protobuf.Duration ttl = 2; // 0 = no expiry (PAT)
+}
+
+message CreateTokenResponse {
+  string token = 1; // plaintext, shown once
+  Token info = 2;
+}
+
+message ListTokensResponse {
+  repeated Token tokens = 1;
+}
+
+message RevokeTokenRequest {
+  string token_id = 1;
+}
+
+message CreateUserRequest {
+  string email = 1;
+  string display_name = 2;
+  string password = 3;
+  Role org_role = 4;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+service ProjectService {
+  rpc CreateProject(CreateProjectRequest) returns (Project) {
+    option (google.api.http) = {
+      post: "/v1/projects"
+      body: "*"
+    };
+  }
+  rpc ListProjects(google.protobuf.Empty) returns (ListProjectsResponse) {
+    option (google.api.http) = {get: "/v1/projects"};
+  }
+  rpc GetProject(GetProjectRequest) returns (Project) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}"};
+  }
+  rpc DeleteProject(DeleteProjectRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/projects/{project_id}"};
+  }
+  rpc AddMember(AddMemberRequest) returns (ProjectMember) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/members"
+      body: "*"
+    };
+  }
+  rpc RemoveMember(RemoveMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/projects/{project_id}/members/{user_id}"};
+  }
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/members"};
+  }
+}
+
+message CreateProjectRequest {
+  string name = 1;
+}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+}
+
+message GetProjectRequest {
+  string project_id = 1;
+}
+
+message DeleteProjectRequest {
+  string project_id = 1;
+}
+
+message AddMemberRequest {
+  string project_id = 1;
+  string user_email = 2;
+  Role role = 3;
+}
+
+message RemoveMemberRequest {
+  string project_id = 1;
+  string user_id = 2;
+}
+
+message ListMembersRequest {
+  string project_id = 1;
+}
+
+message ListMembersResponse {
+  repeated ProjectMember members = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Apps & environments
+// ---------------------------------------------------------------------------
+
+service AppService {
+  rpc CreateApp(CreateAppRequest) returns (App) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/apps"
+      body: "*"
+    };
+  }
+  rpc ListApps(ListAppsRequest) returns (ListAppsResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/apps"};
+  }
+  rpc GetApp(GetAppRequest) returns (GetAppResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/apps/{app_id}"};
+  }
+  rpc DeleteApp(DeleteAppRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/projects/{project_id}/apps/{app_id}"};
+  }
+  // ApplyAppConfig applies a parsed zattera.toml: upserts build config and the
+  // service spec of each declared environment (create-if-missing).
+  rpc ApplyAppConfig(ApplyAppConfigRequest) returns (GetAppResponse) {
+    option (google.api.http) = {
+      put: "/v1/projects/{project_id}/apps/{app_id}/config"
+      body: "*"
+    };
+  }
+  rpc SetEnvVars(SetEnvVarsRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      put: "/v1/projects/{project_id}/environments/{environment_id}/env"
+      body: "*"
+    };
+  }
+  rpc GetEnvVars(GetEnvVarsRequest) returns (GetEnvVarsResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/environments/{environment_id}/env"};
+  }
+  rpc SetReplicas(SetReplicasRequest) returns (Environment) {
+    option (google.api.http) = {
+      put: "/v1/projects/{project_id}/environments/{environment_id}/replicas"
+      body: "*"
+    };
+  }
+}
+
+message CreateAppRequest {
+  string project_id = 1;
+  string name = 2;
+  BuildConfig build = 3;
+}
+
+message ListAppsRequest {
+  string project_id = 1;
+}
+
+message ListAppsResponse {
+  repeated App apps = 1;
+}
+
+message GetAppRequest {
+  string project_id = 1;
+  string app_id = 2; // id or name
+}
+
+message GetAppResponse {
+  App app = 1;
+  repeated Environment environments = 2;
+}
+
+message DeleteAppRequest {
+  string project_id = 1;
+  string app_id = 2;
+}
+
+message ApplyAppConfigRequest {
+  string project_id = 1;
+  string app_id = 2;
+  BuildConfig build = 3;
+  GitHubConfig github = 4;
+  // environment name → spec, from zattera.toml [env.*] sections
+  map<string, ServiceSpec> environments = 5;
+}
+
+message SetEnvVarsRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  map<string, string> set = 3; // plaintext in transit (TLS); encrypted at rest
+  repeated string unset = 4;
+}
+
+message GetEnvVarsRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  bool reveal = 3; // developer+ may reveal values; default returns keys only
+}
+
+message GetEnvVarsResponse {
+  map<string, string> vars = 1; // values "" unless reveal
+}
+
+message SetReplicasRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  uint32 min = 3;
+  uint32 max = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Deploys
+// ---------------------------------------------------------------------------
+
+service DeployService {
+  // Deploy creates a release (from an image ref or a completed build) and a
+  // red/green deployment for it.
+  rpc Deploy(DeployRequest) returns (Deployment) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/environments/{environment_id}/deployments"
+      body: "*"
+    };
+  }
+  // UploadSource streams a tar.gz of the source directory; the response
+  // carries the Build the platform queued for it. Follow with WatchDeployment.
+  rpc UploadSource(stream UploadSourceChunk) returns (UploadSourceResponse);
+  rpc GetDeployment(GetDeploymentRequest) returns (Deployment) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/deployments/{deployment_id}"};
+  }
+  rpc WatchDeployment(GetDeploymentRequest) returns (stream Deployment);
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/environments/{environment_id}/deployments"};
+  }
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/environments/{environment_id}/releases"};
+  }
+  rpc Rollback(RollbackRequest) returns (Deployment) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/environments/{environment_id}/rollback"
+      body: "*"
+    };
+  }
+  rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/instances"};
+  }
+}
+
+message DeployRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  // Exactly one of:
+  string image_ref = 3; // deploy a pre-built image
+  string build_id = 4;  // deploy the image produced by a completed build
+}
+
+message UploadSourceChunk {
+  // First chunk carries the header, the rest carry data.
+  UploadSourceHeader header = 1;
+  bytes data = 2;
+}
+
+message UploadSourceHeader {
+  string project_id = 1;
+  string app_id = 2;
+  string environment_id = 3;
+  BuildType build_type = 4;
+  string git_sha = 5;
+  string git_branch = 6;
+}
+
+message UploadSourceResponse {
+  Build build = 1;
+  Deployment deployment = 2; // auto-created; follows the build
+}
+
+message GetDeploymentRequest {
+  string project_id = 1;
+  string deployment_id = 2;
+}
+
+message ListDeploymentsRequest {
+  string project_id = 1;
+  string environment_id = 2;
+}
+
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+}
+
+message ListReleasesRequest {
+  string project_id = 1;
+  string environment_id = 2;
+}
+
+message ListReleasesResponse {
+  repeated Release releases = 1;
+}
+
+message RollbackRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  string to_release_id = 3; // "" = previous release
+}
+
+message ListInstancesRequest {
+  string project_id = 1;
+  string app_id = 2;         // optional filter
+  string environment_id = 3; // optional filter
+}
+
+message ListInstancesResponse {
+  repeated Assignment instances = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Nodes (admin)
+// ---------------------------------------------------------------------------
+
+service NodeService {
+  rpc ListNodes(google.protobuf.Empty) returns (ListNodesResponse) {
+    option (google.api.http) = {get: "/v1/nodes"};
+  }
+  rpc GetNode(GetNodeRequest) returns (Node) {
+    option (google.api.http) = {get: "/v1/nodes/{node_id}"};
+  }
+  rpc DrainNode(DrainNodeRequest) returns (Node) {
+    option (google.api.http) = {
+      post: "/v1/nodes/{node_id}/drain"
+      body: "*"
+    };
+  }
+  rpc RemoveNode(RemoveNodeRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/nodes/{node_id}"};
+  }
+  rpc SetNodeLabels(SetNodeLabelsRequest) returns (Node) {
+    option (google.api.http) = {
+      put: "/v1/nodes/{node_id}/labels"
+      body: "*"
+    };
+  }
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/join-tokens"
+      body: "*"
+    };
+  }
+}
+
+message ListNodesResponse {
+  repeated Node nodes = 1;
+}
+
+message GetNodeRequest {
+  string node_id = 1;
+}
+
+message DrainNodeRequest {
+  string node_id = 1;
+}
+
+message RemoveNodeRequest {
+  string node_id = 1;
+  bool force = 2; // remove even if not drained
+}
+
+message SetNodeLabelsRequest {
+  string node_id = 1;
+  map<string, string> labels = 2;
+  bool schedulable = 3;
+}
+
+message CreateJoinTokenRequest {
+  bool single_use = 1;
+  google.protobuf.Duration ttl = 2;
+  repeated NodeRole roles = 3;
+}
+
+message CreateJoinTokenResponse {
+  // Full join token: "K10<ca-cert-sha256>::<secret>" — pins the cluster CA.
+  string token = 1;
+  JoinToken info = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Logs & metrics
+// ---------------------------------------------------------------------------
+
+service LogService {
+  rpc Query(LogQuery) returns (stream LogLine);
+}
+
+service MetricsService {
+  rpc Stats(StatsQuery) returns (StatsResponse) {
+    option (google.api.http) = {
+      post: "/v1/stats"
+      body: "*"
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Domains
+// ---------------------------------------------------------------------------
+
+service DomainService {
+  rpc AddDomain(AddDomainRequest) returns (Domain) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/domains"
+      body: "*"
+    };
+  }
+  rpc ListDomains(ListDomainsRequest) returns (ListDomainsResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/domains"};
+  }
+  rpc RemoveDomain(RemoveDomainRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/projects/{project_id}/domains/{domain_id}"};
+  }
+  rpc SetMiddleware(SetMiddlewareRequest) returns (Domain) {
+    option (google.api.http) = {
+      put: "/v1/projects/{project_id}/domains/{domain_id}/middleware"
+      body: "*"
+    };
+  }
+}
+
+message AddDomainRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  string hostname = 3;
+  string path_prefix = 4;
+  string port_name = 5;
+}
+
+message ListDomainsRequest {
+  string project_id = 1;
+}
+
+message ListDomainsResponse {
+  repeated Domain domains = 1;
+}
+
+message RemoveDomainRequest {
+  string project_id = 1;
+  string domain_id = 2;
+}
+
+message SetMiddlewareRequest {
+  string project_id = 1;
+  string domain_id = 2;
+  Middleware middleware = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Volumes
+// ---------------------------------------------------------------------------
+
+service VolumeService {
+  rpc CreateVolume(CreateVolumeRequest) returns (Volume) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/volumes"
+      body: "*"
+    };
+  }
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/volumes"};
+  }
+  rpc DeleteVolume(DeleteVolumeRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/projects/{project_id}/volumes/{volume_id}"};
+  }
+  rpc SnapshotVolume(SnapshotVolumeRequest) returns (VolumeSnapshot) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/volumes/{volume_id}/snapshots"
+      body: "*"
+    };
+  }
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/volumes/{volume_id}/snapshots"};
+  }
+  rpc RestoreSnapshot(RestoreSnapshotRequest) returns (Volume) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/volumes/{volume_id}/restore"
+      body: "*"
+    };
+  }
+  // ListFiles powers `zattera volume browse` (read-only TUI) and `fs ls`.
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  // ReadFile streams one file out of the volume (volume cp <vol>:<path> ./).
+  rpc ReadFile(ReadFileRequest) returns (stream FileChunk);
+  // WriteFile streams a local file into the volume (volume cp ./ <vol>:<path>).
+  rpc WriteFile(stream WriteFileChunk) returns (google.protobuf.Empty);
+}
+
+message CreateVolumeRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  string name = 3;
+  string node_id = 4; // "" = scheduler picks
+  SnapshotPolicy snapshot_policy = 5;
+}
+
+message ListVolumesRequest {
+  string project_id = 1;
+}
+
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+}
+
+message DeleteVolumeRequest {
+  string project_id = 1;
+  string volume_id = 2;
+}
+
+message SnapshotVolumeRequest {
+  string project_id = 1;
+  string volume_id = 2;
+}
+
+message ListSnapshotsRequest {
+  string project_id = 1;
+  string volume_id = 2;
+}
+
+message ListSnapshotsResponse {
+  repeated VolumeSnapshot snapshots = 1;
+}
+
+message RestoreSnapshotRequest {
+  string project_id = 1;
+  string volume_id = 2;
+  string snapshot_id = 3;
+  string target_node_id = 4; // "" = same node
+}
+
+message ListFilesRequest {
+  string project_id = 1;
+  string volume_id = 2;
+  string path = 3;
+}
+
+message ListFilesResponse {
+  repeated FileInfo files = 1;
+}
+
+message FileInfo {
+  string name = 1;
+  bool dir = 2;
+  uint64 size_bytes = 3;
+  int64 mod_time_unix_ms = 4;
+  string mode = 5;
+}
+
+message ReadFileRequest {
+  string project_id = 1;
+  string volume_id = 2;
+  string path = 3;
+}
+
+message FileChunk {
+  bytes data = 1;
+}
+
+message WriteFileChunk {
+  WriteFileHeader header = 1; // first chunk only
+  bytes data = 2;
+}
+
+message WriteFileHeader {
+  string project_id = 1;
+  string volume_id = 2;
+  string path = 3;
+  uint32 mode = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Jobs & cron
+// ---------------------------------------------------------------------------
+
+service JobService {
+  rpc RunJob(RunJobRequest) returns (Job) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/jobs"
+      body: "*"
+    };
+  }
+  rpc GetJob(GetJobRequest) returns (Job) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/jobs/{job_id}"};
+  }
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/jobs"};
+  }
+  rpc CancelJob(CancelJobRequest) returns (Job) {
+    option (google.api.http) = {
+      post: "/v1/projects/{project_id}/jobs/{job_id}/cancel"
+      body: "*"
+    };
+  }
+}
+
+message RunJobRequest {
+  string project_id = 1;
+  string environment_id = 2;
+  string command = 3;
+  uint32 max_retries = 4;
+}
+
+message GetJobRequest {
+  string project_id = 1;
+  string job_id = 2;
+}
+
+message ListJobsRequest {
+  string project_id = 1;
+  string environment_id = 2; // optional filter
+  string cron_name = 3;      // optional filter
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+}
+
+message CancelJobRequest {
+  string project_id = 1;
+  string job_id = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Exec / attach / port-forward (spec §3.15)
+// ---------------------------------------------------------------------------
+
+service ExecService {
+  // Exec runs a command in a running instance; bidirectional byte stream.
+  rpc Exec(stream ExecInput) returns (stream ExecOutput);
+  // PortForward tunnels a TCP connection to a service replica.
+  rpc PortForward(stream PortForwardInput) returns (stream PortForwardOutput);
+  // Top returns a process listing snapshot from inside the container.
+  rpc Top(TopRequest) returns (TopResponse) {
+    option (google.api.http) = {get: "/v1/projects/{project_id}/instances/{instance_id}/top"};
+  }
+}
+
+message ExecInput {
+  ExecStart start = 1; // first message only
+  bytes stdin = 2;
+  TerminalSize resize = 3;
+}
+
+message ExecStart {
+  string project_id = 1;
+  string instance_id = 2; // assignment id
+  repeated string command = 3; // default ["/bin/sh"]
+  bool tty = 4;
+  TerminalSize initial_size = 5;
+}
+
+message TerminalSize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message ExecOutput {
+  bytes stdout = 1;
+  bytes stderr = 2;
+  bool exited = 3;
+  int32 exit_code = 4;
+}
+
+message PortForwardInput {
+  PortForwardStart start = 1; // first message only
+  bytes data = 2;
+}
+
+message PortForwardStart {
+  string project_id = 1;
+  string environment_id = 2;
+  string app_id = 3;
+  string port_name = 4;
+}
+
+message PortForwardOutput {
+  bytes data = 1;
+}
+
+message TopRequest {
+  string project_id = 1;
+  string instance_id = 2;
+}
+
+message TopResponse {
+  repeated string titles = 1;
+  repeated TopProcess processes = 2;
+}
+
+message TopProcess {
+  repeated string fields = 1;
+}
+
+// ---------------------------------------------------------------------------
+// State export/apply (spec F13)
+// ---------------------------------------------------------------------------
+
+service StateService {
+  // Export streams the full desired state as human-readable YAML.
+  rpc Export(ExportRequest) returns (stream StateChunk);
+  // Apply restores/merges a previously exported state document.
+  rpc Apply(stream StateChunk) returns (ApplyResponse);
+}
+
+message ExportRequest {
+  string project_id = 1; // "" = whole cluster (admin)
+}
+
+message StateChunk {
+  bytes data = 1;
+}
+
+message ApplyResponse {
+  uint32 created = 1;
+  uint32 updated = 2;
+  uint32 unchanged = 3;
+  repeated string warnings = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Alerts, audit, backup (M2/M3)
+// ---------------------------------------------------------------------------
+
+service AlertService {
+  rpc PutRule(PutRuleRequest) returns (AlertRule) {
+    option (google.api.http) = {
+      put: "/v1/alert-rules"
+      body: "*"
+    };
+  }
+  rpc ListRules(google.protobuf.Empty) returns (ListRulesResponse) {
+    option (google.api.http) = {get: "/v1/alert-rules"};
+  }
+  rpc DeleteRule(DeleteRuleRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/alert-rules/{rule_id}"};
+  }
+  rpc PutChannel(PutChannelRequest) returns (NotificationChannel) {
+    option (google.api.http) = {
+      put: "/v1/notification-channels"
+      body: "*"
+    };
+  }
+  rpc ListChannels(google.protobuf.Empty) returns (ListChannelsResponse) {
+    option (google.api.http) = {get: "/v1/notification-channels"};
+  }
+  rpc DeleteChannel(DeleteChannelRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/notification-channels/{channel_id}"};
+  }
+}
+
+message PutRuleRequest {
+  AlertRule rule = 1;
+}
+
+message ListRulesResponse {
+  repeated AlertRule rules = 1;
+}
+
+message DeleteRuleRequest {
+  string rule_id = 1;
+}
+
+message PutChannelRequest {
+  NotificationChannel channel = 1;
+}
+
+message ListChannelsResponse {
+  repeated NotificationChannel channels = 1;
+}
+
+message DeleteChannelRequest {
+  string channel_id = 1;
+}
+
+service AuditService {
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse) {
+    option (google.api.http) = {
+      post: "/v1/audit/query"
+      body: "*"
+    };
+  }
+}
+
+message QueryAuditRequest {
+  string project_id = 1; // "" = cluster (admin)
+  string actor_user_id = 2;
+  string method_prefix = 3;
+  int64 since_unix_ms = 4;
+  int64 until_unix_ms = 5;
+  uint32 limit = 6; // default 100
+}
+
+message QueryAuditResponse {
+  repeated AuditEntry entries = 1;
+}
+
+service BackupService {
+  rpc SetBackupConfig(SetBackupConfigRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      put: "/v1/backup/config"
+      body: "*"
+    };
+  }
+  rpc TriggerBackup(TriggerBackupRequest) returns (BackupRecord) {
+    option (google.api.http) = {
+      post: "/v1/backup/run"
+      body: "*"
+    };
+  }
+  rpc ListBackups(google.protobuf.Empty) returns (ListBackupsResponse) {
+    option (google.api.http) = {get: "/v1/backup"};
+  }
+}
+
+message SetBackupConfigRequest {
+  BackupConfig config = 1;
+  string s3_access_key_plain = 2; // sealed server-side
+  string s3_secret_key_plain = 3;
+}
+
+message TriggerBackupRequest {
+  string kind = 1; // "state" | "full"
+}
+
+message ListBackupsResponse {
+  repeated BackupRecord backups = 1;
+  BackupConfig config = 2; // credentials redacted
+}
