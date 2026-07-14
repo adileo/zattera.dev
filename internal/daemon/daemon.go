@@ -206,6 +206,11 @@ func Run(ctx context.Context, cfg config.Config) error {
 		RegistryAddr:    net.JoinHostPort(agentHostIP(cfg), "5000"),
 	}, log)
 
+	// Route builder (T-39): builds the global RouteSnapshot from replicated state
+	// and streams it to node proxies via RouteService.
+	routeBuilder := scheduler.NewRouteBuilder(rs, clk, cfg.Domain, log)
+	go routeBuilder.Run(ctx)
+
 	apiSrv, err := api.New(api.Options{
 		CA:               authority,
 		Listen:           cfg.API.Listen,
@@ -222,6 +227,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		AgentSyncService: syncSrv,
 		JoinService:      joinSrv,
 		MeshService:      api.NewMeshServer(st, rs, clk, log),
+		RouteService:     api.NewRouteServer(routeBuilder),
 		GitHubWebhook:    api.NewGitHubWebhook(st, rs, sealer, clk, log),
 		UnaryInterceptors: []grpc.UnaryServerInterceptor{
 			forwarder.UnaryInterceptor, authn.UnaryInterceptor, rbac.UnaryInterceptor, auditor.UnaryInterceptor,

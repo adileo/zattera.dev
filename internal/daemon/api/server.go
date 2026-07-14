@@ -59,6 +59,8 @@ type Options struct {
 	JoinService clusterv1.JoinServiceServer
 	// MeshService distributes WireGuard peer sets (mTLS node identity).
 	MeshService clusterv1.MeshServiceServer
+	// RouteService streams route snapshots to node proxies (mTLS node identity).
+	RouteService clusterv1.RouteServiceServer
 
 	// GitHubWebhook, if set, is mounted as a raw HTTP handler at
 	// /v1/github/webhook (signature-authenticated, not part of the gRPC policy).
@@ -239,6 +241,9 @@ func registerGRPC(s *grpc.Server, opts Options) {
 	}
 	if opts.MeshService != nil {
 		clusterv1.RegisterMeshServiceServer(s, opts.MeshService)
+	}
+	if opts.RouteService != nil {
+		clusterv1.RegisterRouteServiceServer(s, opts.RouteService)
 	}
 }
 
