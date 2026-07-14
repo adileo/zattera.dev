@@ -55,6 +55,7 @@ type Options struct {
 	LogService     zatterav1.LogServiceServer
 	DomainService  zatterav1.DomainServiceServer
 	ExecService    zatterav1.ExecServiceServer
+	MetricsService zatterav1.MetricsServiceServer
 
 	// Node↔control services (mTLS node identity, no REST gateway).
 	AgentSyncService clusterv1.AgentSyncServiceServer
@@ -246,6 +247,9 @@ func registerGRPC(s *grpc.Server, opts Options) {
 	if opts.ExecService != nil {
 		zatterav1.RegisterExecServiceServer(s, opts.ExecService)
 	}
+	if opts.MetricsService != nil {
+		zatterav1.RegisterMetricsServiceServer(s, opts.MetricsService)
+	}
 	if opts.AgentSyncService != nil {
 		clusterv1.RegisterAgentSyncServiceServer(s, opts.AgentSyncService)
 	}
@@ -295,6 +299,11 @@ func registerGateway(ctx context.Context, mux *runtime.ServeMux, endpoint string
 	if opts.AuditService != nil {
 		if err := zatterav1.RegisterAuditServiceHandlerFromEndpoint(ctx, mux, endpoint, dialOpts); err != nil {
 			return fmt.Errorf("api: gateway audit: %w", err)
+		}
+	}
+	if opts.MetricsService != nil {
+		if err := zatterav1.RegisterMetricsServiceHandlerFromEndpoint(ctx, mux, endpoint, dialOpts); err != nil {
+			return fmt.Errorf("api: gateway metrics: %w", err)
 		}
 	}
 	return nil
