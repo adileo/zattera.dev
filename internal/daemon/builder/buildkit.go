@@ -33,7 +33,14 @@ const (
 	// dockerfileFrontend is BuildKit's built-in Dockerfile frontend.
 	dockerfileFrontend = "dockerfile.v0"
 
-	buildkitBootTimeout = 60 * time.Second
+	// buildkitd listens on TCP (not a unix socket) so the host daemon can reach
+	// it via a published loopback port. A bind-mounted unix socket is not
+	// connectable across the Docker Desktop VM boundary on macOS; a published
+	// TCP port works identically on macOS and Linux.
+	buildkitTCPPort  = 1234 // inside the container
+	buildkitHostPort = 8372 // published on the host loopback
+
+	buildkitBootTimeout = 90 * time.Second
 	buildTimeout        = 30 * time.Minute
 )
 
@@ -114,18 +121,24 @@ func New(rt runtime.ContainerRuntime, clk clock.Clock, dataDir, caPath string, l
 	}
 }
 
-func (b *Builder) socketPath() string {
-	return filepath.Join(b.dataDir, "buildkit", "buildkitd.sock")
+// buildkitAddr is the TCP address the host daemon uses to reach buildkitd
+// (published from the container onto the host loopback).
+func (b *Builder) buildkitAddr() string {
+	return fmt.Sprintf("tcp://127.0.0.1:%d", buildkitHostPort)
 }
 
 // EnsureBuildkitd makes sure the managed buildkitd container is running and
 // its API answers, then returns a connected client. Safe to call before every
 // build (idempotent).
-func (b *Builder) EnsureBuildkitd(ctx context.Context) (*bkclient.Client, error) {
+func (b *Builder) EnsureBuildkitd(ctx context.Context, onLog func(string)) (*bkclient.Client, error) {
+	if onLog == nil {
+		onLog = func(string) {}
+	}
 	if err := os.MkdirAll(filepath.Join(b.dataDir, "buildkit"), 0o755); err != nil {
 		return nil, fmt.Errorf("builder: buildkit dir: %w", err)
 	}
-	if err := b.rt.EnsureImage(ctx, buildkitImage, nil, nil); err != nil {
+	onLog("provisioning build environment (pulling buildkitd)…")
+	if err := b.rt.EnsureImage(ctx, buildkitImage, nil, func(status string) { onLog(status) }); err != nil {
 		return nil, fmt.Errorf("builder: pull buildkitd: %w", err)
 	}
 
@@ -134,8 +147,12 @@ func (b *Builder) EnsureBuildkitd(ctx context.Context) (*bkclient.Client, error)
 		return nil, fmt.Errorf("builder: list buildkitd: %w", err)
 	}
 	if len(running) == 0 {
+		// Cache lives on a named Docker volume, never a host bind mount:
+		// buildkitd creates unix sockets under /run/buildkit and its cache under
+		// /var/lib/buildkit, and Docker Desktop's host filesystem cannot back
+		// those (chmod on a socket fails). /run/buildkit stays on the container fs.
 		mounts := []runtime.Mount{
-			{HostPath: filepath.Join(b.dataDir, "buildkit"), Target: "/run/buildkit"},
+			{VolumeName: "zt-buildkit-cache", Target: "/var/lib/buildkit"},
 		}
 		if b.caPath != "" {
 			mounts = append(mounts, runtime.Mount{HostPath: b.caPath, Target: "/etc/ssl/certs/zattera-ca.pem", ReadOnly: true})
@@ -143,11 +160,17 @@ func (b *Builder) EnsureBuildkitd(ctx context.Context) (*bkclient.Client, error)
 		id, err := b.rt.CreateContainer(ctx, runtime.ContainerSpec{
 			Name:       buildkitContainer,
 			Image:      buildkitImage,
-			Command:    []string{"--addr", "unix:///run/buildkit/buildkitd.sock"},
+			Command:    []string{"--addr", fmt.Sprintf("tcp://0.0.0.0:%d", buildkitTCPPort)},
 			Privileged: true,
 			Mounts:     mounts,
-			Restart:    runtime.RestartUnlessStopped,
-			Labels:     map[string]string{"zattera.system": "buildkitd"},
+			Ports: []runtime.PortBinding{{
+				ContainerPort: buildkitTCPPort,
+				Protocol:      "tcp",
+				HostIP:        "127.0.0.1",
+				HostPort:      buildkitHostPort,
+			}},
+			Restart: runtime.RestartUnlessStopped,
+			Labels:  map[string]string{"zattera.system": "buildkitd"},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("builder: create buildkitd: %w", err)
@@ -156,16 +179,17 @@ func (b *Builder) EnsureBuildkitd(ctx context.Context) (*bkclient.Client, error)
 			return nil, fmt.Errorf("builder: start buildkitd: %w", err)
 		}
 	}
-	return b.waitBuildkitd(ctx)
+	return b.waitBuildkitd(ctx, onLog)
 }
 
 // waitBuildkitd polls the buildkitd API until it answers or the boot timeout
-// elapses.
-func (b *Builder) waitBuildkitd(ctx context.Context) (*bkclient.Client, error) {
+// elapses, emitting a heartbeat each poll so a slow boot is not mistaken for a
+// lost builder.
+func (b *Builder) waitBuildkitd(ctx context.Context, onLog func(string)) (*bkclient.Client, error) {
 	deadline := b.clk.Now().Add(buildkitBootTimeout)
 	backoff := 200 * time.Millisecond
 	for {
-		c, err := bkclient.New(ctx, "unix://"+b.socketPath())
+		c, err := bkclient.New(ctx, b.buildkitAddr())
 		if err == nil {
 			if _, ierr := c.Info(ctx); ierr == nil {
 				return c, nil
@@ -175,6 +199,7 @@ func (b *Builder) waitBuildkitd(ctx context.Context) (*bkclient.Client, error) {
 		if b.clk.Now().After(deadline) {
 			return nil, fmt.Errorf("builder: buildkitd did not become ready within %s", buildkitBootTimeout)
 		}
+		onLog("waiting for buildkitd to become ready…")
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -270,11 +295,14 @@ func (b *Builder) Build(ctx context.Context, req RunBuildRequest, events chan<- 
 	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
 
+	emit(events, BuildEvent{Phase: "build", Log: "starting build"})
+	onLog := func(s string) { emit(events, BuildEvent{Phase: "build", Log: s}) }
+
 	platforms := resolvePlatforms(req.Platforms, b.native)
 	if err := b.EnsureEmulators(ctx, platforms); err != nil {
 		return nil, b.fail(events, err)
 	}
-	c, err := b.EnsureBuildkitd(ctx)
+	c, err := b.EnsureBuildkitd(ctx, onLog)
 	if err != nil {
 		return nil, b.fail(events, err)
 	}

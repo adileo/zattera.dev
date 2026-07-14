@@ -19,6 +19,9 @@ const (
 	devBannerPrefix  = "DEVBANNER:"
 	prodIngressHTTP  = ":80"
 	prodIngressHTTPS = ":443"
+	// devRegistryListen avoids :5000, which macOS ControlCenter (AirPlay) owns.
+	devRegistryListen  = ":5001"
+	prodRegistryListen = ":5000"
 )
 
 // applyDevDefaults fills unset dev-mode conveniences: a loopback app domain and
@@ -37,6 +40,12 @@ func applyDevDefaults(cfg *config.Config) {
 	if cfg.Ingress.HTTPSListen == prodIngressHTTPS {
 		cfg.Ingress.HTTPSListen = devIngressHTTPS
 	}
+	if cfg.Registry.Listen == prodRegistryListen {
+		cfg.Registry.Listen = devRegistryListen
+	}
+	// Dev builds push/pull over plain HTTP so the host Docker daemon and
+	// buildkitd need no extra CA trust for the loopback registry.
+	cfg.Registry.InsecureHTTP = true
 }
 
 // devBannerInfo is everything the startup banner prints — and everything the

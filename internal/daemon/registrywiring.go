@@ -27,7 +27,13 @@ import (
 // is logged and non-fatal — the node runs without a local registry.
 func startRegistry(ctx context.Context, cfg config.Config, st *state.Store, authority *ca.CA, clk clock.Clock, log *slog.Logger) (*registry.Registry, error) {
 	dir := filepath.Join(cfg.DataDir, "registry")
-	reg, err := registry.New(dir, clk, registryAuthenticator(st, clk), log)
+	// Dev registry is loopback + insecure HTTP and accepts anonymous push/pull,
+	// so the co-located builder and host Docker need no credentials (T-54).
+	var auth registry.Authenticator
+	if !cfg.Dev {
+		auth = registryAuthenticator(st, clk)
+	}
+	reg, err := registry.New(dir, clk, auth, log)
 	if err != nil {
 		return nil, fmt.Errorf("registry: %w", err)
 	}

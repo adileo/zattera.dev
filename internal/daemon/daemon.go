@@ -231,7 +231,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	joinSrv := api.NewJoinServer(st, rs, clk, authority, api.JoinConfig{
 		MeshEnabled:     !cfg.Mesh.Disabled,
 		ControlGRPCAddr: net.JoinHostPort(agentHostIP(cfg), apiPort),
-		RegistryAddr:    net.JoinHostPort(agentHostIP(cfg), "5000"),
+		RegistryAddr:    registryClientAddr(cfg),
 	}, log)
 
 	// Route builder (T-39): builds the global RouteSnapshot from replicated state
@@ -316,7 +316,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		scheduler.GRPCBuildDialer{Connect: agentLocalConnect},
 		scheduler.BuildDispatcherConfig{
 			SourceURLBase: "https://" + net.JoinHostPort(agentHostIP(cfg), apiPortStr) + "/internal/blobs/",
-			RegistryAddr:  net.JoinHostPort(agentHostIP(cfg), "5000"),
+			RegistryAddr:  registryClientAddr(cfg),
 		}, log).Run(ctx)
 
 	// Mesh (T-19): on a mesh-enabled control node, bring WireGuard up as the hub
@@ -606,6 +606,21 @@ func agentHostIP(cfg config.Config) string {
 		return ip
 	}
 	return "127.0.0.1"
+}
+
+// registryClientAddr is the "host:port" that builder + executor containers use
+// to reach the embedded registry. In dev the registry runs on the host, so
+// containers reach it via host.docker.internal (Docker Desktop and Linux with
+// host-gateway); in a real cluster it is the control node's mesh address.
+func registryClientAddr(cfg config.Config) string {
+	_, port, _ := net.SplitHostPort(cfg.Registry.Listen)
+	if port == "" {
+		port = "5000"
+	}
+	if cfg.Dev {
+		return net.JoinHostPort("host.docker.internal", port)
+	}
+	return net.JoinHostPort(agentHostIP(cfg), port)
 }
 
 // bindLoopback turns ":7480" into "127.0.0.1:7480" for single-node mode

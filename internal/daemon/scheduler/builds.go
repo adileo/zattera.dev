@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,8 +23,10 @@ import (
 )
 
 // builderLostTimeout is how long the dispatcher waits for the next build event
-// before giving up on a builder and failing the build.
-const builderLostTimeout = 60 * time.Second
+// before giving up on a builder and failing the build. It must comfortably
+// exceed a cold buildkitd provision (image pull + boot), during which the
+// builder emits periodic progress heartbeats.
+const builderLostTimeout = 4 * time.Minute
 
 // buildLogRingSize caps the in-memory per-build log ring kept on the control
 // node until durable log storage lands (T-40).
@@ -216,11 +219,14 @@ func (d *BuildDispatcher) dispatch(ctx context.Context, b *zatterav1.Build) {
 		return
 	}
 
-	repo := fmt.Sprintf("%s/%s/%s", d.cfg.RegistryAddr, b.GetProjectId(), b.GetAppId())
+	// OCI repository names must be lowercase; project/app ids are ULIDs
+	// (uppercase Crockford base32), so lowercase the repo path. The tag (build
+	// id) may keep its case.
+	repo := strings.ToLower(fmt.Sprintf("%s/%s/%s", d.cfg.RegistryAddr, b.GetProjectId(), b.GetAppId()))
 	req := &clusterv1.RunBuildRequest{
 		Build:        b,
 		SourceUrl:    d.cfg.SourceURLBase + b.GetTarballDigest(),
-		PushImageRef: repo + ":" + b.GetMeta().GetId(),
+		PushImageRef: repo + ":" + strings.ToLower(b.GetMeta().GetId()),
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)

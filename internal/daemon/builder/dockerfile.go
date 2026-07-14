@@ -20,10 +20,11 @@ import (
 // or runaway tarball cannot fill the builder's disk.
 const maxContextBytes = 512 << 20
 
-// localPlatform is this node's own OCI platform (e.g. "linux/arm64"). Builds
-// with no explicit platform target it, so the single-node/native path never
-// needs emulation.
-func localPlatform() string { return runtime.GOOS + "/" + runtime.GOARCH }
+// localPlatform is the node's native BUILD platform (e.g. "linux/arm64").
+// Containers are always Linux — buildkitd runs in a Linux context even when the
+// host OS is macOS/Windows — so the OS is always "linux"; only the host arch
+// varies. Builds with no explicit platform target this, avoiding emulation.
+func localPlatform() string { return "linux/" + runtime.GOARCH }
 
 // resolvePlatforms returns the platforms to build for: the request's list, or
 // the builder's native platform when none is given.
