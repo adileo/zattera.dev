@@ -50,6 +50,7 @@ func Commands() []*cobra.Command {
 	var (
 		cfgPath string
 		dataDir string
+		domain  string
 		dev     bool
 		joinTo  string
 		token   string
@@ -64,6 +65,9 @@ func Commands() []*cobra.Command {
 			}
 			if dataDir != "" {
 				cfg.DataDir = dataDir
+			}
+			if domain != "" {
+				cfg.Domain = domain
 			}
 			if dev {
 				cfg.Dev = true
@@ -83,6 +87,7 @@ func Commands() []*cobra.Command {
 	}
 	server.Flags().StringVar(&cfgPath, "config", "", "path to config.toml")
 	server.Flags().StringVar(&dataDir, "data-dir", "", "override data_dir")
+	server.Flags().StringVar(&domain, "domain", "", "cluster app domain (overrides config; dev defaults to sslip.io)")
 	server.Flags().BoolVar(&dev, "dev", false, "single-node developer mode (no mesh, no ACME, self-signed TLS)")
 	server.Flags().StringVar(&joinTo, "join", "", "control-plane address to join (host:8443)")
 	server.Flags().StringVar(&token, "token", "", "join token")
