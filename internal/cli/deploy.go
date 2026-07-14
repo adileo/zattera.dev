@@ -24,11 +24,8 @@ func newDeployCmd() *cobra.Command {
 	var prod bool
 	cmd := &cobra.Command{
 		Use:   "deploy",
-		Short: "Deploy an image with a health-gated red/green rollout",
+		Short: "Deploy an image, or build and deploy the current directory",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if image == "" {
-				return errors.New("--image is required")
-			}
 			client, cctx, err := clientFromContext()
 			if err != nil {
 				return err
@@ -38,25 +35,29 @@ func newDeployCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			appName, err := resolveAppName(app)
-			if err != nil {
-				return err
-			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), deployWatchTimeout)
 			defer cancel()
 
-			envName := deployEnvName(env, prod)
-			envID, err := resolveEnv(ctx, client, proj, appName, envName)
-			if err != nil {
-				return err
+			p := printerFor(cmd)
+			if image != "" {
+				appName, err := resolveAppName(app)
+				if err != nil {
+					return err
+				}
+				envName := deployEnvName(env, prod)
+				envID, err := resolveEnv(ctx, client, proj, appName, envName)
+				if err != nil {
+					return err
+				}
+				dep, err := client.Deploys.Deploy(ctx, &zatterav1.DeployRequest{
+					ProjectId: proj, EnvironmentId: envID, ImageRef: image,
+				})
+				if err != nil {
+					return apiError(err)
+				}
+				return watchDeployment(ctx, client, p, deployTarget{project: proj, app: appName, env: envName, envID: envID}, dep)
 			}
-			dep, err := client.Deploys.Deploy(ctx, &zatterav1.DeployRequest{
-				ProjectId: proj, EnvironmentId: envID, ImageRef: image,
-			})
-			if err != nil {
-				return apiError(err)
-			}
-			return watchDeployment(ctx, client, printerFor(cmd), deployTarget{project: proj, app: appName, env: envName, envID: envID}, dep)
+			return deploySource(ctx, client, p, proj, deployEnvName(env, prod))
 		},
 	}
 	cmd.Flags().StringVar(&image, "image", "", "container image to deploy (e.g. nginx:alpine)")
@@ -73,6 +74,10 @@ type deployTarget struct {
 	app     string
 	env     string
 	envID   string
+	// Source-build fields drive the "✓ Built …" line when set.
+	sourceBuild bool
+	buildType   string
+	buildStart  time.Time
 }
 
 // watchDeployment streams a deployment to completion, rendering phase progress
@@ -82,6 +87,7 @@ type deployTarget struct {
 func watchDeployment(ctx context.Context, client *apiclient.Client, p *ui.Printer, tgt deployTarget, dep *zatterav1.Deployment) error {
 	depID := dep.GetMeta().GetId()
 	lastPhase := zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_UNSPECIFIED
+	builtPrinted := false
 
 	for redials := 0; ; redials++ {
 		stream, err := client.Deploys.WatchDeployment(ctx, &zatterav1.GetDeploymentRequest{ProjectId: tgt.project, DeploymentId: depID})
@@ -105,6 +111,12 @@ func watchDeployment(ctx context.Context, client *apiclient.Client, p *ui.Printe
 			} else if d.GetPhase() != lastPhase {
 				lastPhase = d.GetPhase()
 				p.Infof("  %s", phaseLabel(d.GetPhase()))
+			}
+			// A source build has completed once the deployment moves past
+			// BUILDING into a placement/serving phase.
+			if tgt.sourceBuild && !builtPrinted && buildDone(d.GetPhase()) {
+				builtPrinted = true
+				p.Successf("Built %s (%s, %s)", tgt.app, tgt.buildType, time.Since(tgt.buildStart).Round(time.Second))
 			}
 			if success, done := deployOutcome(d.GetPhase()); done {
 				return finishDeploy(ctx, client, p, tgt, d, success)
@@ -202,6 +214,120 @@ func phaseLabel(p zatterav1.DeploymentPhase) string {
 		return "rolled back"
 	default:
 		return "unknown"
+	}
+}
+
+// deploySource applies zattera.toml, tars the current directory (honouring
+// ignore files), uploads it, and watches the resulting build+deployment.
+func deploySource(ctx context.Context, client *apiclient.Client, p *ui.Printer, proj, envName string) error {
+	data, err := os.ReadFile("zattera.toml")
+	if err != nil {
+		return errors.New("no --image given and no zattera.toml in the current directory")
+	}
+	ac, err := appconfig.Parse(data)
+	if err != nil {
+		return err
+	}
+	if ac.Name == "" {
+		return errors.New("zattera.toml has no [app] name")
+	}
+
+	// Ensure the app exists and its config is applied before deploying.
+	if _, gerr := client.Apps.GetApp(ctx, &zatterav1.GetAppRequest{ProjectId: proj, AppId: ac.Name}); gerr != nil {
+		if _, cerr := client.Apps.CreateApp(ctx, &zatterav1.CreateAppRequest{ProjectId: proj, Name: ac.Name, Build: ac.Build}); cerr != nil {
+			return apiError(cerr)
+		}
+	}
+	if _, aerr := client.Apps.ApplyAppConfig(ctx, &zatterav1.ApplyAppConfigRequest{
+		ProjectId: proj, AppId: ac.Name, Build: ac.Build, Github: ac.GitHub, Environments: ac.Services,
+	}); aerr != nil {
+		return apiError(aerr)
+	}
+
+	envID, err := resolveEnv(ctx, client, proj, ac.Name, envName)
+	if err != nil {
+		return err
+	}
+
+	dep, err := uploadSource(ctx, client, proj, ac.Name, envID, ac.Build.GetType())
+	if err != nil {
+		return err
+	}
+	// If the user cancels now, the build continues server-side.
+	p.Infof("  uploaded source; deployment %s", dep.GetMeta().GetId())
+
+	tgt := deployTarget{
+		project: proj, app: ac.Name, env: envName, envID: envID,
+		sourceBuild: true, buildType: buildTypeLabel(ac.Build.GetType()), buildStart: time.Now(),
+	}
+	return watchDeployment(ctx, client, p, tgt, dep)
+}
+
+// uploadSource streams a tar.gz of the current directory to UploadSource in 1MB
+// chunks (header first) and returns the auto-created deployment.
+func uploadSource(ctx context.Context, client *apiclient.Client, proj, app, envID string, bt zatterav1.BuildType) (*zatterav1.Deployment, error) {
+	stream, err := client.Deploys.UploadSource(ctx)
+	if err != nil {
+		return nil, apiError(err)
+	}
+	if err := stream.Send(&zatterav1.UploadSourceChunk{Header: &zatterav1.UploadSourceHeader{
+		ProjectId: proj, AppId: app, EnvironmentId: envID, BuildType: bt,
+	}}); err != nil {
+		return nil, apiError(err)
+	}
+
+	pr, pw := io.Pipe()
+	go func() { pw.CloseWithError(writeSourceTar(".", pw)) }()
+	defer func() { _ = pr.Close() }()
+
+	buf := make([]byte, 1<<20)
+	for {
+		n, rerr := pr.Read(buf)
+		if n > 0 {
+			if serr := stream.Send(&zatterav1.UploadSourceChunk{Data: buf[:n]}); serr != nil {
+				return nil, apiError(serr)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return nil, fmt.Errorf("packaging source: %w", rerr)
+		}
+	}
+	resp, err := stream.CloseAndRecv()
+	if err != nil {
+		return nil, apiError(err)
+	}
+	return resp.GetDeployment(), nil
+}
+
+// buildDone reports whether a deployment phase is at or past the point where the
+// source build has finished (green placement onward).
+func buildDone(phase zatterav1.DeploymentPhase) bool {
+	switch phase {
+	case zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PLACING,
+		zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_STARTING,
+		zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_HEALTHCHECKING,
+		zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PROMOTING,
+		zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_DRAINING_OLD,
+		zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_SUCCEEDED:
+		return true
+	default:
+		return false
+	}
+}
+
+func buildTypeLabel(t zatterav1.BuildType) string {
+	switch t {
+	case zatterav1.BuildType_BUILD_TYPE_NIXPACKS:
+		return "nixpacks"
+	case zatterav1.BuildType_BUILD_TYPE_DOCKERFILE:
+		return "dockerfile"
+	case zatterav1.BuildType_BUILD_TYPE_IMAGE:
+		return "image"
+	default:
+		return "auto"
 	}
 }
 
