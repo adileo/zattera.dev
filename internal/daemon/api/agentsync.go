@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
@@ -213,9 +214,17 @@ func (s *SyncServer) buildRuntime(a *zatterav1.Assignment) *clusterv1.Assignment
 	if !ok {
 		return nil
 	}
+	spec := rel.GetService()
+	// Job assignments (T-53) run the job's command instead of the service CMD.
+	if jobID := a.GetJobId(); jobID != "" {
+		if job, ok := s.store.Job(jobID); ok && job.GetCommand() != "" {
+			spec = proto.Clone(rel.GetService()).(*zatterav1.ServiceSpec)
+			spec.Command = job.GetCommand()
+		}
+	}
 	rt := &clusterv1.AssignmentRuntime{
 		ImageRef: rel.GetImageRef(),
-		Spec:     rel.GetService(),
+		Spec:     spec,
 	}
 	// Per-(project,env,node) bridge subnet (T-46): the scheduler allocates it;
 	// the agent attaches the container and points its DNS at the gateway.

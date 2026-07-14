@@ -67,7 +67,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) leaderLoop(ctx context.Context) {
 	sub := s.store.State().Watch(
 		state.KindEnvironment, state.KindRelease, state.KindDeployment,
-		state.KindNode, state.KindAssignment, state.KindVolume,
+		state.KindNode, state.KindAssignment, state.KindVolume, state.KindJob,
 	)
 	defer sub.Close()
 
@@ -117,6 +117,10 @@ func (s *Scheduler) evaluate(ctx context.Context) error {
 	if err := s.reconcileVIPs(ctx, st); err != nil {
 		return err
 	}
+	// Place and drive one-shot jobs (T-53).
+	if err := s.reconcileJobs(ctx, st); err != nil {
+		return err
+	}
 	// Migrate/stop instances off DRAINING nodes and mark them DRAINED (T-29).
 	return s.reconcileDrains(ctx, st)
 }
@@ -147,6 +151,11 @@ func (s *Scheduler) evaluateEnv(ctx context.Context, st *state.Store, env *zatte
 	var stopIDs []string             // flip to STOP (stale release / excess)
 	var deleteIDs []string           // already observed STOPPED / lost stateless
 	for _, a := range st.ListAssignments(envID) {
+		// Job assignments (T-53) are one-shot runs owned by reconcileJobs; they
+		// must never count toward service replica math.
+		if a.GetJobId() != "" {
+			continue
+		}
 		switch a.GetDesired() {
 		case zatterav1.AssignmentDesired_ASSIGNMENT_DESIRED_STOP:
 			// Reap once the agent reports it stopped.

@@ -360,6 +360,13 @@ func (e *Executor) containerSpec(ctx context.Context, a *zatterav1.Assignment, r
 		stopGrace = g
 	}
 
+	// Jobs (T-53) are one-shot: never let Docker restart a completed job
+	// container. The scheduler observes the exit and reaps the assignment.
+	restart := runtime.RestartUnlessStopped
+	if a.GetJobId() != "" {
+		restart = runtime.RestartNever
+	}
+
 	return runtime.ContainerSpec{
 		Name:    containerName(a),
 		Image:   rt.GetImageRef(),
@@ -372,7 +379,7 @@ func (e *Executor) containerSpec(ctx context.Context, a *zatterav1.Assignment, r
 			CPUMillis: spec.GetResources().GetCpuMillis(),
 			MemoryMB:  spec.GetResources().GetMemoryMb(),
 		},
-		Restart:   runtime.RestartUnlessStopped,
+		Restart:   restart,
 		StopGrace: stopGrace,
 		Network:   network,
 		DNS:       dns,

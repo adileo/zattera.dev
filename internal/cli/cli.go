@@ -46,6 +46,7 @@ func Commands() []*cobra.Command {
 		newPortForwardCmd(),
 		newFsCmd(),
 		newStatsCmd(),
+		newJobsCmd(),
 	}
 	for _, c := range cmds {
 		c.PersistentFlags().BoolVar(&jsonFlag, "json", false, "machine-readable output")
