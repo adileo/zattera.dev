@@ -15,11 +15,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -32,6 +34,7 @@ import (
 	"github.com/zattera-dev/zattera/internal/config"
 	"github.com/zattera-dev/zattera/internal/daemon/agent"
 	"github.com/zattera-dev/zattera/internal/daemon/api"
+	"github.com/zattera-dev/zattera/internal/daemon/builder"
 	"github.com/zattera-dev/zattera/internal/daemon/ca"
 	"github.com/zattera-dev/zattera/internal/daemon/livestate"
 	"github.com/zattera-dev/zattera/internal/daemon/nodeinfo"
@@ -236,29 +239,36 @@ func Run(ctx context.Context, cfg config.Config) error {
 	routeBuilder := scheduler.NewRouteBuilder(rs, clk, cfg.Domain, log)
 	go routeBuilder.Run(ctx)
 
+	// Agent-local dial (T-54): the control plane reaches every node's
+	// AgentLocalService (:8444, node mTLS) for build dispatch, log fan-out and
+	// exec. In single-node/dev the node dials its own :8444 over loopback.
+	agentLocalConnect := newAgentLocalConnect(authority, nodeID, log)
+	uploadsDir := filepath.Join(cfg.DataDir, "uploads")
+
 	apiSrv, err := api.New(api.Options{
-		CA:               authority,
-		Listen:           cfg.API.Listen,
-		Logger:           log,
-		DNSNames:         serverDNSNames(cfg),
-		IPs:              serverIPs(cfg),
-		AuthService:      api.NewAuthServer(st, rs, clk),
-		ProjectService:   api.NewProjectServer(st, rs, clk, rbac),
-		AppService:       api.NewAppServer(st, rs, clk, sealer),
-		DeployService:    api.NewDeployServer(st, rs, clk, filepath.Join(cfg.DataDir, "uploads")),
-		StateService:     api.NewStateServer(st, rs, clk),
-		NodeService:      api.NewNodeServer(st, rs, clk, authority),
-		AuditService:     auditor,
-		LogService:       api.NewLogServer(st, api.GRPCLogDialer{Connect: agentLocalDialUnavailable}, clk, log),
-		ExecService:      api.NewExecServer(st, api.GRPCExecDialer{Connect: agentLocalDialUnavailable}, log),
-		MetricsService:   api.NewMetricsServer(st, live, clk),
-		JobService:       api.NewJobServer(st, rs, clk),
-		AgentSyncService: syncSrv,
-		JoinService:      joinSrv,
-		MeshService:      api.NewMeshServer(st, rs, clk, log),
-		RouteService:     api.NewRouteServer(routeBuilder),
-		DomainService:    api.NewDomainServer(st, rs, clk, cfg.Domain),
-		GitHubWebhook:    api.NewGitHubWebhook(st, rs, sealer, clk, log),
+		CA:                authority,
+		Listen:            cfg.API.Listen,
+		Logger:            log,
+		DNSNames:          serverDNSNames(cfg),
+		IPs:               serverIPs(cfg),
+		AuthService:       api.NewAuthServer(st, rs, clk),
+		ProjectService:    api.NewProjectServer(st, rs, clk, rbac),
+		AppService:        api.NewAppServer(st, rs, clk, sealer),
+		DeployService:     api.NewDeployServer(st, rs, clk, uploadsDir),
+		StateService:      api.NewStateServer(st, rs, clk),
+		NodeService:       api.NewNodeServer(st, rs, clk, authority),
+		AuditService:      auditor,
+		LogService:        api.NewLogServer(st, api.GRPCLogDialer{Connect: agentLocalConnect}, clk, log),
+		ExecService:       api.NewExecServer(st, api.GRPCExecDialer{Connect: agentLocalConnect}, log),
+		MetricsService:    api.NewMetricsServer(st, live, clk),
+		JobService:        api.NewJobServer(st, rs, clk),
+		AgentSyncService:  syncSrv,
+		JoinService:       joinSrv,
+		MeshService:       api.NewMeshServer(st, rs, clk, log),
+		RouteService:      api.NewRouteServer(routeBuilder),
+		DomainService:     api.NewDomainServer(st, rs, clk, cfg.Domain),
+		GitHubWebhook:     api.NewGitHubWebhook(st, rs, sealer, clk, log),
+		SourceBlobHandler: api.SourceBlobHandler(uploadsDir),
 		UnaryInterceptors: []grpc.UnaryServerInterceptor{
 			forwarder.UnaryInterceptor, authn.UnaryInterceptor, rbac.UnaryInterceptor, auditor.UnaryInterceptor,
 		},
@@ -294,7 +304,20 @@ func Run(ctx context.Context, cfg config.Config) error {
 	// Release retention (T-38): the leader prunes old releases + their registry
 	// images and stale source tarballs. The registry sweeper is wired when this
 	// control node hosts a local registry.
-	go scheduler.NewRetention(rs, clk, retentionSweeper, filepath.Join(cfg.DataDir, "uploads"), log).Run(ctx)
+	go scheduler.NewRetention(rs, clk, retentionSweeper, uploadsDir, log).Run(ctx)
+
+	// Build dispatcher (T-35/T-54): the leader assigns QUEUED builds to builder
+	// nodes over their AgentLocalService and records the outcome. Leader-gated.
+	_, apiPortStr, _ := net.SplitHostPort(cfg.API.Listen)
+	if apiPortStr == "" {
+		apiPortStr = "8443"
+	}
+	go scheduler.NewBuildDispatcher(rs, clk,
+		scheduler.GRPCBuildDialer{Connect: agentLocalConnect},
+		scheduler.BuildDispatcherConfig{
+			SourceURLBase: "https://" + net.JoinHostPort(agentHostIP(cfg), apiPortStr) + "/internal/blobs/",
+			RegistryAddr:  net.JoinHostPort(agentHostIP(cfg), "5000"),
+		}, log).Run(ctx)
 
 	// Mesh (T-19): on a mesh-enabled control node, bring WireGuard up as the hub
 	// and keep its own peer set in sync. Single-node/dev disables the mesh.
@@ -337,6 +360,15 @@ func Run(ctx context.Context, cfg config.Config) error {
 				log.Warn("node agent stopped", "err", err)
 			}
 		}()
+
+		// Agent-local service (T-54): serve build/exec/port-forward on :8444 with
+		// node mTLS so the control plane can dispatch builds and interactive
+		// sessions to this node. Needs a container runtime.
+		if rt != nil {
+			if err := startAgentLocalServer(ctx, authority, cfg, nodeID, rt, clk, log); err != nil {
+				log.Warn("agent-local service failed to start", "err", err)
+			}
+		}
 	}
 
 	select {
@@ -360,10 +392,17 @@ func registerLocalNode(ctx context.Context, rs *raftstore.Store, cfg config.Conf
 		roles = append(roles, zatterav1.NodeRole_NODE_ROLE_WORKER)
 	}
 	now := timestamppb.Now()
+	// Worker nodes can build (T-54): label them builder=true so the dispatcher
+	// can place builds. Single-node/dev thus builds locally.
+	var labels map[string]string
+	if cfg.HasRole(config.RoleWorker) {
+		labels = map[string]string{"builder": "true"}
+	}
 	node := &zatterav1.Node{
 		Meta:           &zatterav1.Meta{Id: nodeID, CreatedAt: now, UpdatedAt: now},
 		Name:           cfg.NodeName,
 		Roles:          roles,
+		Labels:         labels,
 		Status:         zatterav1.NodeStatus_NODE_STATUS_ALIVE,
 		Schedulable:    true,
 		Capacity:       &zatterav1.ResourceLimits{CpuMillis: capacity.CPUMillis, MemoryMb: capacity.MemoryMB},
@@ -593,9 +632,74 @@ func loadOrCreateNodeID(dataDir string) (string, error) {
 	return id, nil
 }
 
-// agentLocalDialUnavailable is a placeholder LogDialer connector: the node-mTLS
-// AgentLocalService listener (:8444) is wired with the build pipeline / exec
-// tasks (T-35/T-49). Until then log fan-out resolves nodes but returns no lines.
-func agentLocalDialUnavailable(context.Context, *zatterav1.Node) (*grpc.ClientConn, error) {
-	return nil, fmt.Errorf("daemon: agent-local service not yet wired")
+// agentLocalPort is the node-mTLS AgentLocalService port (build/log/exec).
+const agentLocalPort = "8444"
+
+// newAgentLocalConnect returns a Connect func the control plane uses to dial a
+// node's AgentLocalService (:8444) over node mTLS. It targets the node's mesh IP
+// (single-node/dev falls back to loopback).
+func newAgentLocalConnect(authority *ca.CA, nodeID string, _ *slog.Logger) func(context.Context, *zatterav1.Node) (*grpc.ClientConn, error) {
+	return func(_ context.Context, node *zatterav1.Node) (*grpc.ClientConn, error) {
+		host := node.GetMeshIp()
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		tlsCfg := nodeClientTLS(authority, nodeID, host)
+		return grpc.NewClient(net.JoinHostPort(host, agentLocalPort),
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	}
+}
+
+// startAgentLocalServer binds the node-local AgentLocalService on :8444 (node
+// mTLS) serving builds + exec/top/port-forward. The build sub-server needs a
+// container runtime + a source fetcher that pulls tarballs from the control
+// blob endpoint over the same node identity.
+func startAgentLocalServer(ctx context.Context, authority *ca.CA, cfg config.Config, nodeID string, rt crt.ContainerRuntime, clk clock.Clock, log *slog.Logger) error {
+	tlsCfg := nodeClientTLS(authority, nodeID, "127.0.0.1")
+	fetch := agent.HTTPSourceFetcher{Client: &http.Client{
+		Timeout:   10 * time.Minute,
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+	}}
+
+	caPath := filepath.Join(cfg.DataDir, "ca", "ca.crt")
+	bld := builder.New(rt, clk, cfg.DataDir, caPath, log)
+	buildSrv := agent.NewBuildServer(agent.BuildServerConfig{
+		Builder:          bld,
+		Fetch:            fetch,
+		RegistryInsecure: cfg.Registry.InsecureHTTP,
+		Logger:           log,
+	})
+	execSrv := agent.NewExecServer(rt, log)
+	local := agent.NewLocalServer(buildSrv, execSrv)
+
+	serverTLS, err := authority.ServerTLSConfig([]string{"localhost"}, agentLocalIPs(cfg))
+	if err != nil {
+		return fmt.Errorf("server tls: %w", err)
+	}
+	lis, err := net.Listen("tcp", ":"+agentLocalPort)
+	if err != nil {
+		return fmt.Errorf("listen :%s: %w", agentLocalPort, err)
+	}
+	grpcSrv := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+	clusterv1.RegisterAgentLocalServiceServer(grpcSrv, local)
+	go func() {
+		if err := grpcSrv.Serve(lis); err != nil && ctx.Err() == nil {
+			log.Warn("agent-local server stopped", "err", err)
+		}
+	}()
+	go func() { <-ctx.Done(); grpcSrv.GracefulStop() }()
+	log.Info("agent-local service listening", "addr", lis.Addr().String())
+	return nil
+}
+
+// agentLocalIPs returns the IP SANs for the :8444 server cert: loopback plus
+// the mesh IP when present.
+func agentLocalIPs(cfg config.Config) []net.IP {
+	ips := []net.IP{net.ParseIP("127.0.0.1")}
+	if ip := controlMeshIP(cfg); ip != "" {
+		if p := net.ParseIP(ip); p != nil {
+			ips = append(ips, p)
+		}
+	}
+	return ips
 }

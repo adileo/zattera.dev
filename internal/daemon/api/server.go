@@ -71,6 +71,10 @@ type Options struct {
 	// /v1/github/webhook (signature-authenticated, not part of the gRPC policy).
 	GitHubWebhook http.Handler
 
+	// SourceBlobHandler, if set, serves build source tarballs by digest under
+	// /internal/blobs/ to builder nodes (mTLS-gated, T-54).
+	SourceBlobHandler http.Handler
+
 	// Interceptors run in the given order (auth → rbac → audit → leader-forward
 	// per later tasks). Health checks bypass them via a method skip inside each.
 	UnaryInterceptors  []grpc.UnaryServerInterceptor
@@ -170,6 +174,12 @@ func (s *Server) routeHandler(grpcSrv *grpc.Server, gw http.Handler) http.Handle
 		// by its HMAC signature rather than the gRPC auth chain.
 		if s.opts.GitHubWebhook != nil && r.URL.Path == "/v1/github/webhook" {
 			s.opts.GitHubWebhook.ServeHTTP(w, r)
+			return
+		}
+		// Build source blobs (T-54): builder nodes fetch source tarballs by
+		// digest over node mTLS (the mTLS identity gates access).
+		if s.opts.SourceBlobHandler != nil && strings.HasPrefix(r.URL.Path, "/internal/blobs/") {
+			s.opts.SourceBlobHandler.ServeHTTP(w, r)
 			return
 		}
 		gw.ServeHTTP(w, r)
