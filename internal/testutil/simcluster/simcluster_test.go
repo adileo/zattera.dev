@@ -66,10 +66,14 @@ func TestLeaderFailover(t *testing.T) {
 		t.Fatalf("dead node %s still leader", killed)
 	}
 
-	// Writes must keep working on the survivors, and prior state must be there.
-	if _, ok := newLeader.State.Project("p1"); !ok {
-		t.Fatal("pre-failover state lost")
-	}
+	// Prior state must survive the failover. A freshly elected leader commits a
+	// no-op for its new term before advancing its commit index and applying
+	// earlier entries to the FSM, so poll rather than reading State once.
+	waitReplicated(t, c, func(n *Node) bool {
+		_, ok := n.State.Project("p1")
+		return ok
+	})
+	// Writes must keep working on the survivors.
 	if err := c.Apply(putProject("p2", "after")); err != nil {
 		t.Fatal(err)
 	}
