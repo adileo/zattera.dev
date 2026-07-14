@@ -62,10 +62,12 @@ type RegistryAuth struct {
 	Password string
 }
 
-// BuildEvent is one item of build progress. Log events carry a line; the final
-// event has Done set with the outcome and (on success) the pushed image ref,
-// its digest (the INDEX digest for multi-arch), and the built platforms.
+// BuildEvent is one item of build progress. Log events carry a line (and a
+// Phase: "plan" for the nixpacks planner, "build" for the BuildKit solve); the
+// final event has Done set with the outcome and (on success) the pushed image
+// ref, its digest (the INDEX digest for multi-arch), and the built platforms.
 type BuildEvent struct {
+	Phase       string
 	Log         string
 	Done        bool
 	Success     bool
@@ -317,7 +319,7 @@ func (b *Builder) Build(ctx context.Context, req RunBuildRequest, events chan<- 
 		defer close(done)
 		for s := range statusCh {
 			for _, line := range solveStatusLines(s) {
-				emit(events, BuildEvent{Log: line})
+				emit(events, BuildEvent{Phase: "build", Log: line})
 			}
 		}
 	}()

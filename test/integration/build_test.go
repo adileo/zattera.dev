@@ -114,6 +114,63 @@ func TestDockerfileBuildEmulated(t *testing.T) {
 	}
 }
 
+// TestNixpacksBuild builds the node-hello fixture (no Dockerfile) via the
+// nixpacks planner + BuildKit, pushes it, and runs the result. This is the
+// T-34 acceptance.
+func TestNixpacksBuild(t *testing.T) {
+	RequireDocker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	rt, err := crt.NewDocker()
+	if err != nil {
+		t.Skipf("docker runtime: %v", err)
+	}
+	src := FixtureDir(t, "node-hello")
+	if builder.ResolveBuildType(src) != builder.BuildNixpacks {
+		t.Fatal("node-hello should resolve to a nixpacks build")
+	}
+	addr, reg := startRegistry(t)
+	t.Cleanup(func() { _ = reg.Close() })
+
+	b := builder.New(rt, clock.Real{}, t.TempDir(), "", nil)
+	req := builder.RunBuildRequest{
+		BuildID:          "nix1",
+		Project:          "demo",
+		App:              "node-hello",
+		Registry:         addr,
+		SourceDir:        src,
+		RegistryInsecure: true,
+	}
+	events := make(chan builder.BuildEvent, 256)
+	go drainBuildLogs(t, events)
+	res, err := b.BuildNixpacks(ctx, req, events)
+	close(events)
+	if err != nil {
+		t.Fatalf("nixpacks build: %v", err)
+	}
+	if res.ImageDigest == "" {
+		t.Fatal("no image digest")
+	}
+
+	ref := addr + "/demo/node-hello:nix1"
+	if out, err := exec.CommandContext(ctx, "docker", "pull", ref).CombinedOutput(); err != nil {
+		t.Fatalf("docker pull: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", ref).Run() })
+
+	port := freePort(t)
+	name := fmt.Sprintf("zt-nix-it-%d", time.Now().UnixNano())
+	run := exec.CommandContext(ctx, "docker", "run", "-d", "--rm", "--name", name,
+		"-e", "PORT=8080", "-p", fmt.Sprintf("127.0.0.1:%d:8080", port), ref)
+	if out, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("docker run: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+
+	waitHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/healthz", port), 60*time.Second)
+}
+
 func drainBuildLogs(t *testing.T, events <-chan builder.BuildEvent) {
 	for ev := range events {
 		if ev.Done {
