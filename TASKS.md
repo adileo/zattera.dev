@@ -1733,6 +1733,73 @@ first build — buildkit cold start + npm-less go build).
 
 ---
 
+# Phase 5.1 — Production ingress + TLS (deferred M1 wiring)
+
+**Context:** T-42/T-43/T-44 built the L7/L4 proxy cores, the certmagic ACME
+issuer and the raft-backed cert storage; T-39 built the RouteClient. T-54
+wired only the *dev* ingress (in-process RouteBuilder + self-signed CA). These
+two tasks complete the *production* daemon wiring so a non-dev node actually
+serves apps on `:80`/`:443` with real certificates, and so the CLI no longer
+needs the cluster CA out-of-band.
+
+### T-89 — Production ingress listeners (`:80`/`:443` + ACME)
+Phase 5.1 · Depends: T-39, T-42, T-43, T-44 · Size: M
+**Files:** `internal/daemon/ingresswiring.go` (extend),
+`internal/daemon/daemon.go` (extend), `ingresswiring_test.go`
+**Steps:**
+1. Generalize `startIngress` to a production mode: source = a `proxy.RouteClient`
+   (dials `RouteService` over node mTLS, disk-cached, T-39) instead of the
+   in-process RouteBuilder; TLS = `tlsmgr.New` with ACME (raft storage + the
+   on-demand DecisionFunc gated on known route hostnames, T-44) instead of the
+   dev CA; keep the HTTPS→ HTTPS redirect ON (leave `DisableHTTPSRedirect=false`).
+2. Start the L7 handler on `cfg.Ingress.HTTPSListen` (`:443`) under
+   `tm.GetTLSConfig()`, and on `cfg.Ingress.HTTPListen` (`:80`) wrapped in
+   `tm.HTTP01Handler(l7)` so the ACME HTTP-01 challenge + plaintext redirect
+   share the port. Also start the L4 proxy (`proxy.NewL4`) for `public_l4_port`
+   passthrough. Skip all of it when `cfg.Ingress.Disabled`.
+3. In `daemon.go`, run production ingress on every node (control or worker) that
+   is not `--dev` and not `Ingress.Disabled`; dev keeps its existing path. Wire
+   the RouteClient dialer over the node's own API/mesh identity, and the CertHost
+   source from the current RouteSnapshot's hostnames.
+**Gotchas:** ACME needs `:80`/`:443` publicly reachable + real DNS — cannot be
+verified in CI; unit-test the wiring (listener construction, source/TLS
+selection by mode) with fakes, and gate the ACME dial behind reachability.
+Port conflicts with API/registry — document. Only ONE cluster-wide ACME issuer
+(locks via the raft storage, already in T-44).
+**Tests:** unit — production `startIngress` selects RouteClient + ACME TLS and
+binds both listeners against an injected fake; dev path unchanged.
+**Acceptance:** `go test ./internal/daemon/ -run TestIngress`; manual: a public
+node serves `https://<app>-<env>.<domain>/` with a Let's Encrypt cert.
+
+### T-90 — Public API TLS: ACME for the API + CLI CA trust-on-first-use
+Phase 5.1 · Depends: T-44, T-17 · Size: M
+**Files:** `internal/daemon/api/server.go` (extend),
+`internal/daemon/daemon.go` (extend), `internal/cli/cli.go` (login extend),
+`internal/cli/cliconfig/cliconfig.go`, `server_test.go`
+**Steps:**
+1. API server cert: when a public `api.advertise_addr` hostname + ACME are
+   configured (not dev, ACME not disabled), serve the API TLS listener with a
+   certificate from the shared `tlsmgr.Manager` (ACME, on-demand for the API
+   hostname) instead of the self-signed CA cert. Fall back to the CA server cert
+   when ACME is off/unreachable or the endpoint is an IP/loopback.
+2. CLI trust-on-first-use: extend `zattera login` with `--ca-pin <sha256>` (and
+   a bannered fingerprint at boot). When neither `--ca-cert` nor a public/ACME
+   cert is available, dial once with `InsecureSkipVerify`, verify the presented
+   chain's CA hash equals the pin (mirrors the T-17 join `caPinCreds`), then
+   persist the fetched CA PEM into the CLI context. `--ca-cert` and a
+   publicly-trusted cert still work with no pin.
+3. Print the CA fingerprint on the dev/first-boot banner so `--ca-pin` is
+   copy-pasteable.
+**Gotchas:** the gateway dials the API over loopback — that hop keeps the CA
+cert (don't ACME the loopback SAN). ACME for the API needs the same public
+reachability caveat as T-89.
+**Tests:** unit — login pins + persists the CA from a self-signed server
+(fake), rejects a hash mismatch; API server selects ACME vs CA cert by config.
+**Acceptance:** `go test ./internal/daemon/api/ -run TestServerACME` and
+`go test ./internal/cli/ -run TestLoginPin`.
+
+---
+
 # Phase 6 — M2: HA, mesh phases C/D, metrics, autoscaler, volumes, backup, cron
 
 **Exit criterion:** 3-node control plane survives leader kill with zero

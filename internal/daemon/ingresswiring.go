@@ -9,38 +9,70 @@ import (
 	"time"
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
+	"github.com/zattera-dev/zattera/internal/config"
 	"github.com/zattera-dev/zattera/internal/daemon/ca"
 	"github.com/zattera-dev/zattera/internal/daemon/proxy"
+	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
 	"github.com/zattera-dev/zattera/internal/daemon/scheduler"
 	"github.com/zattera-dev/zattera/internal/daemon/tlsmgr"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 )
 
-// startIngress binds the HTTP and HTTPS ingress listeners and routes requests to
-// app instances using the live RouteSnapshot (T-54). In single-node/dev the
-// route source is the in-process RouteBuilder; multi-node ingress dials
-// RouteService (wired later). HTTPS certs come from the TLS manager (dev: CA).
-func startIngress(ctx context.Context, cfg configForIngress, rb *scheduler.RouteBuilder, authority *ca.CA, nodeID string, clk clock.Clock, log *slog.Logger) error {
+// configForIngress is the subset of config the ingress needs.
+type configForIngress struct {
+	HTTPListen  string
+	HTTPSListen string
+}
+
+// startDevIngress serves the single-node/dev ingress: the in-process
+// RouteBuilder as the source, self-signed dev certs from the cluster CA, and no
+// forced HTTPS redirect (dev HTTPS is on a non-standard port). (T-54)
+func startDevIngress(ctx context.Context, cfg configForIngress, rb *scheduler.RouteBuilder, authority *ca.CA, nodeID string, clk clock.Clock, log *slog.Logger) error {
 	tm, err := tlsmgr.New(tlsmgr.Options{Dev: true, CA: authority, Logger: log})
 	if err != nil {
 		return err
 	}
-	src := routeBuilderSource{rb: rb}
-	l7 := proxy.NewL7(src, nodeID, clk)
-	l7.DisableHTTPSRedirect = true // dev: HTTPS is on a non-standard port, self-signed
+	return serveIngress(ctx, cfg, routeBuilderSource{rb: rb}, tm, true, nodeID, clk, log)
+}
 
-	// HTTP listener (:8080 in dev): route L7 traffic; the ACME solver is a
-	// passthrough in dev.
+// startProdIngress serves the production ingress on :80/:443: routes come from
+// source (the in-process RouteBuilder on control nodes, a RouteClient on
+// workers), certificates from ACME (raft-backed storage + on-demand issuance
+// gated on known route hostnames), and plaintext requests 308-redirect to HTTPS.
+// It also starts the L4 passthrough proxy. (T-89)
+func startProdIngress(ctx context.Context, cfg config.Config, rs *raftstore.Store, source proxy.RouteSource, nodeID string, clk clock.Clock, log *slog.Logger) error {
+	tm, err := tlsmgr.New(tlsmgr.Options{
+		Storage: tlsmgr.NewStorage(newRaftCertKV(rs), clk),
+		Hosts:   routeCertHosts{source: source},
+		Email:   cfg.ACME.Email,
+		Staging: cfg.ACME.Staging,
+		Logger:  log,
+	})
+	if err != nil {
+		return err
+	}
+	// L4 passthrough for public_l4_port routes (T-43).
+	l4 := proxy.NewL4(source, nodeID, log)
+	go l4.Run(ctx)
+
+	ic := configForIngress{HTTPListen: cfg.Ingress.HTTPListen, HTTPSListen: cfg.Ingress.HTTPSListen}
+	return serveIngress(ctx, ic, source, tm, false, nodeID, clk, log)
+}
+
+// serveIngress binds the HTTP and HTTPS listeners for an L7 proxy over source,
+// using tm for TLS. disableRedirect leaves plaintext requests served directly
+// (dev) instead of redirecting to HTTPS (prod). The HTTP listener also mounts
+// the ACME HTTP-01 solver (a passthrough in dev).
+func serveIngress(ctx context.Context, cfg configForIngress, source proxy.RouteSource, tm *tlsmgr.Manager, disableRedirect bool, nodeID string, clk clock.Clock, log *slog.Logger) error {
+	l7 := proxy.NewL7(source, nodeID, clk)
+	l7.DisableHTTPSRedirect = disableRedirect
+
 	httpSrv := &http.Server{
-		Addr:              cfg.HTTPListen,
 		Handler:           tm.HTTP01Handler(l7),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
-	// HTTPS listener (:9443 in dev): same routing under TLS.
 	httpsSrv := &http.Server{
-		Addr:              cfg.HTTPSListen,
 		Handler:           l7,
-		TLSConfig:         tm.GetTLSConfig(),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 
@@ -74,10 +106,21 @@ func startIngress(ctx context.Context, cfg configForIngress, rb *scheduler.Route
 	return nil
 }
 
-// configForIngress is the subset of config the ingress needs.
-type configForIngress struct {
-	HTTPListen  string
-	HTTPSListen string
+// routeCertHosts sources the set of hostnames ACME may issue for from the
+// current route snapshot (tlsmgr.CertHostSource).
+type routeCertHosts struct{ source proxy.RouteSource }
+
+func (h routeCertHosts) CertHosts() []string {
+	snap := h.source.Current()
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range snap.GetHttpRoutes() {
+		if hn := r.GetHostname(); hn != "" && !seen[hn] {
+			seen[hn] = true
+			out = append(out, hn)
+		}
+	}
+	return out
 }
 
 // routeBuilderSource adapts the in-process RouteBuilder to proxy.RouteSource.

@@ -240,13 +240,21 @@ func Run(ctx context.Context, cfg config.Config) error {
 	routeBuilder := scheduler.NewRouteBuilder(rs, clk, cfg.Domain, log)
 	go routeBuilder.Run(ctx)
 
-	// Ingress (T-54): serve HTTP/HTTPS and route to app instances via the live
-	// route snapshot. Single-node/dev uses the in-process RouteBuilder as the
-	// source; multi-node ingress over RouteService is wired later.
-	if cfg.Dev {
-		if err := startIngress(ctx, configForIngress{
+	// Ingress: serve HTTP/HTTPS and route to app instances via the live route
+	// snapshot. Dev (T-54) uses self-signed certs on unprivileged ports;
+	// production (T-89) binds :80/:443 with ACME certificates. Both use the
+	// in-process RouteBuilder as the route source on this control node.
+	switch {
+	case cfg.Ingress.Disabled:
+		// explicitly off
+	case cfg.Dev:
+		if err := startDevIngress(ctx, configForIngress{
 			HTTPListen: cfg.Ingress.HTTPListen, HTTPSListen: cfg.Ingress.HTTPSListen,
 		}, routeBuilder, authority, nodeID, clk, log); err != nil {
+			log.Warn("ingress failed to start", "err", err)
+		}
+	default:
+		if err := startProdIngress(ctx, cfg, rs, routeBuilderSource{rb: routeBuilder}, nodeID, clk, log); err != nil {
 			log.Warn("ingress failed to start", "err", err)
 		}
 	}
