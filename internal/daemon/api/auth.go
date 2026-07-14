@@ -29,14 +29,15 @@ const sessionTTL = 24 * time.Hour
 // AuthServer implements zatterav1.AuthServiceServer.
 type AuthServer struct {
 	zatterav1.UnimplementedAuthServiceServer
-	store *state.Store
-	raft  Applier
-	clock clock.Clock
+	store         *state.Store
+	raft          Applier
+	clock         clock.Clock
+	clusterDomain string // cfg.Domain; surfaced via WhoAmI for app-URL construction
 }
 
-// NewAuthServer builds the auth service.
-func NewAuthServer(store *state.Store, raft Applier, clk clock.Clock) *AuthServer {
-	return &AuthServer{store: store, raft: raft, clock: clk}
+// NewAuthServer builds the auth service. clusterDomain is cfg.Domain.
+func NewAuthServer(store *state.Store, raft Applier, clk clock.Clock, clusterDomain string) *AuthServer {
+	return &AuthServer{store: store, raft: raft, clock: clk, clusterDomain: clusterDomain}
 }
 
 // Login exchanges email+password for a short-lived session token.
@@ -75,8 +76,9 @@ func (s *AuthServer) WhoAmI(ctx context.Context, _ *emptypb.Empty) (*zatterav1.W
 		return nil, status.Error(codes.NotFound, "user not found")
 	}
 	return &zatterav1.WhoAmIResponse{
-		User:        redactUser(user),
-		Memberships: s.store.ListMembershipsOfUser(id.UserID),
+		User:          redactUser(user),
+		Memberships:   s.store.ListMembershipsOfUser(id.UserID),
+		ClusterDomain: s.clusterDomain,
 	}, nil
 }
 

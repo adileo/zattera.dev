@@ -51,7 +51,7 @@ func deployHarness(t *testing.T) (addr string, caPEM []byte, adminToken string) 
 		DNSNames:       []string{"localhost"},
 		IPs:            []net.IP{net.ParseIP("127.0.0.1")},
 		Logger:         log,
-		AuthService:    api.NewAuthServer(st, rs, clk),
+		AuthService:    api.NewAuthServer(st, rs, clk, ""),
 		ProjectService: api.NewProjectServer(st, rs, clk, rbac),
 		AppService:     api.NewAppServer(st, rs, clk, sealer),
 		DeployService:  api.NewDeployServer(st, rs, clk, t.TempDir()),

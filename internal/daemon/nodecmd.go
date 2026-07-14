@@ -64,21 +64,29 @@ func newInitCmd() *cobra.Command {
 			in := bufio.NewReader(cmd.InOrStdin())
 			host, _ := os.Hostname()
 			pub := detectPublicIP()
+			if nodeName == "" {
+				nodeName = host
+			}
 
 			if !yes {
-				nodeName = ask(cmd, in, "Node name", orDefault(nodeName, host))
+				nodeName = ask(cmd, in, "Node name", nodeName)
 				domain = ask(cmd, in, "Cluster app domain (e.g. apps.example.com)", domain)
 				email = ask(cmd, in, "Email for Let's Encrypt certs (blank = self-signed only)", email)
-				advertise = ask(cmd, in, "Public host/IP that CLI and workers use to reach this node", orDefault(advertise, pub))
-			} else {
-				nodeName = orDefault(nodeName, host)
-				advertise = orDefault(advertise, pub)
 			}
 			if domain == "" {
-				return fmt.Errorf("a cluster app domain is required")
+				return fmt.Errorf("a cluster app domain is required (--domain)")
 			}
+			// The API is reached by a DNS name so it can obtain a public ACME
+			// certificate that the CLI verifies with normal roots. Default it to
+			// api.<domain>, which the cluster domain's wildcard already covers.
 			if advertise == "" {
-				return fmt.Errorf("could not detect this host's public IP; pass --advertise")
+				advertise = "api." + domain
+			}
+			if !yes {
+				advertise = ask(cmd, in, "Public API hostname (must resolve to this host)", advertise)
+			}
+			if pub == "" {
+				return fmt.Errorf("could not detect this host's public IP (needed for the WireGuard mesh)")
 			}
 			if dataDir == "" {
 				dataDir = defaultDataDir
@@ -86,9 +94,10 @@ func newInitCmd() *cobra.Command {
 			if clusterName == "" {
 				clusterName = firstLabel(domain)
 			}
-			meshIP := orDefault(pub, advertise)
 
-			if err := writeNodeConfig(controlConfigTOML(nodeName, dataDir, domain, advertise, meshIP, email, staging)); err != nil {
+			// advertise (DNS name) drives the API cert + ACME; the public IP is
+			// the mesh endpoint and the address workers join by.
+			if err := writeNodeConfig(controlConfigTOML(nodeName, dataDir, domain, advertise, pub, email, staging)); err != nil {
 				return err
 			}
 			if err := installUnit(); err != nil {
@@ -119,7 +128,7 @@ func newInitCmd() *cobra.Command {
 				return fmt.Errorf("mint join token: %w", err)
 			}
 
-			printInitSummary(out, nodeName, clusterName, advertise, fp, token, join)
+			printInitSummary(out, nodeName, clusterName, advertise, pub, fp, token, join)
 			return nil
 		},
 	}
@@ -348,12 +357,15 @@ func waitAPI(addr string, timeout time.Duration) error {
 var tokenRE = regexp.MustCompile(`zpat_[A-Za-z0-9_-]+`)
 
 // captureAdminToken reads the first-boot admin token from the systemd journal.
+// The journal can retain tokens from earlier cluster lifetimes (a teardown wipes
+// the data dir but not the journal), so take the most recent match — the token
+// printed by this cluster's bootstrap.
 func captureAdminToken(timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		out, _ := exec.Command("journalctl", "-u", "zattera", "--no-pager", "-o", "cat").Output()
-		if m := tokenRE.FindString(string(out)); m != "" {
-			return m, nil
+		if ms := tokenRE.FindAllString(string(out), -1); len(ms) > 0 {
+			return ms[len(ms)-1], nil
 		}
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("admin token not found in the journal " +
@@ -445,10 +457,9 @@ func orDefault(v, def string) string {
 }
 
 func firstLabel(domain string) string {
-	// apps.example.com → example ; a bare label → itself.
-	parts := strings.Split(domain, ".")
-	if len(parts) >= 2 {
-		return parts[len(parts)-2]
+	// devcluster.zattera.dev → devcluster ; a bare label → itself.
+	if i := strings.IndexByte(domain, '.'); i > 0 {
+		return domain[:i]
 	}
 	return domain
 }
@@ -460,8 +471,8 @@ func dataNote(keepData bool) string {
 	return " and data (state, volumes, images)"
 }
 
-func printInitSummary(w io.Writer, nodeName, cluster, advertise, fp, adminToken, joinToken string) {
-	api := "https://" + advertise + ":8443"
+func printInitSummary(w io.Writer, nodeName, cluster, apiHost, joinIP, fp, adminToken, joinToken string) {
+	api := "https://" + apiHost + ":8443"
 	fmt.Fprintf(w, `
 ✓ Control node %q is up.
 
@@ -469,9 +480,11 @@ func printInitSummary(w io.Writer, nodeName, cluster, advertise, fp, adminToken,
     %s
     zt login --server %s --ca-pin %s --token %s --context %s
 
-  Add more nodes — run this on each new server:
+  Add more nodes — run this on each new server (join by IP, not the API name):
     %s && sudo zattera cluster join %s:8443 --token %s
 
   The admin token above is shown once — store it safely.
-`, nodeName, installOneLine, api, fp, adminToken, cluster, installOneLine, advertise, joinToken)
+  Once the API's certificate issues, the CLI verifies it with public roots
+  (the --ca-pin above covers the first moments before that).
+`, nodeName, installOneLine, api, fp, adminToken, cluster, installOneLine, joinIP, joinToken)
 }

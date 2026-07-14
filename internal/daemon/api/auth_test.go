@@ -41,7 +41,7 @@ func newAuthHarness(t *testing.T) *authHarness {
 	rs := raftstore.NewTestStore(t)
 	clk := clock.Real{}
 	auth := NewAuthenticator(rs.State(), rs, clk)
-	authSrv := NewAuthServer(rs.State(), rs, clk)
+	authSrv := NewAuthServer(rs.State(), rs, clk, "")
 
 	authority, err := ca.LoadOrCreate(t.TempDir())
 	if err != nil {

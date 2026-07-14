@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/appconfig"
@@ -142,7 +143,7 @@ func finishDeploy(ctx context.Context, client *apiclient.Client, p *ui.Printer, 
 	}
 	version, healthy := releaseSummary(ctx, client, tgt, d.GetReleaseId())
 	p.Successf("Released v%d → %s (red/green, %d replica(s) healthy)", version, tgt.env, healthy)
-	p.URL(deployURL(client, tgt))
+	p.URL(deployURL(ctx, client, tgt))
 	return nil
 }
 
@@ -166,10 +167,20 @@ func releaseSummary(ctx context.Context, client *apiclient.Client, tgt deployTar
 	return version, healthy
 }
 
-// deployURL is the env's first domain, else a synthesized subdomain. Domain
-// wiring lands with the ingress tasks; this keeps the command's contract.
-func deployURL(_ *apiclient.Client, tgt deployTarget) string {
-	return fmt.Sprintf("https://%s-%s.apps.zattera.local", tgt.app, tgt.env)
+// deployURL is the env's explicit custom domain if one is attached, else the
+// implicit <app>-<env>.<cluster-domain> host (cluster domain from WhoAmI).
+func deployURL(ctx context.Context, client *apiclient.Client, tgt deployTarget) string {
+	if resp, err := client.Domains.ListDomains(ctx, &zatterav1.ListDomainsRequest{ProjectId: tgt.project}); err == nil {
+		for _, d := range resp.GetDomains() {
+			if d.GetEnvironmentId() == tgt.envID && !d.GetClusterSubdomain() && d.GetHostname() != "" {
+				return "https://" + d.GetHostname()
+			}
+		}
+	}
+	if who, err := client.Auth.WhoAmI(ctx, &emptypb.Empty{}); err == nil && who.GetClusterDomain() != "" {
+		return fmt.Sprintf("https://%s-%s.%s", tgt.app, tgt.env, who.GetClusterDomain())
+	}
+	return fmt.Sprintf("https://%s-%s.<cluster-domain>", tgt.app, tgt.env)
 }
 
 // deployOutcome classifies a phase: (success, done). Traffic-switched phases

@@ -44,7 +44,7 @@ func testServer(t *testing.T) (addr string, caPEM []byte, adminToken string) {
 		Listen:         "127.0.0.1:0",
 		DNSNames:       []string{"localhost"},
 		IPs:            []net.IP{net.ParseIP("127.0.0.1")},
-		AuthService:    api.NewAuthServer(st, rs, clk),
+		AuthService:    api.NewAuthServer(st, rs, clk, ""),
 		ProjectService: api.NewProjectServer(st, rs, clk, rbac),
 		AppService:     api.NewAppServer(st, rs, clk, sealer),
 		UnaryInterceptors: []grpc.UnaryServerInterceptor{

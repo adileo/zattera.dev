@@ -81,6 +81,9 @@ message LoginResponse {
 message WhoAmIResponse {
   User user = 1;
   repeated ProjectMember memberships = 2;
+  // Cluster app domain (cfg.domain): apps publish at <app>-<env>.<cluster_domain>.
+  // Empty when the node has no configured domain.
+  string cluster_domain = 3;
 }
 
 message CreateTokenRequest {

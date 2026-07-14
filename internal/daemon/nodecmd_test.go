@@ -96,10 +96,10 @@ func TestCAFingerprintMatchesDaemon(t *testing.T) {
 
 func TestFirstLabel(t *testing.T) {
 	for in, want := range map[string]string{
-		"apps.example.com": "example",
-		"apps.zattera.dev": "zattera",
-		"localhost":        "localhost",
-		"a.b.c.d":          "c",
+		"devcluster.zattera.dev": "devcluster",
+		"apps.example.com":       "apps",
+		"localhost":              "localhost",
+		"a.b.c.d":                "a",
 	} {
 		if got := firstLabel(in); got != want {
 			t.Errorf("firstLabel(%q) = %q, want %q", in, got, want)

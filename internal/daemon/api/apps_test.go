@@ -48,7 +48,7 @@ func newAppHarness(t *testing.T) (*appHarness, string) {
 		Listen:         "127.0.0.1:0",
 		DNSNames:       []string{"localhost"},
 		IPs:            []net.IP{net.ParseIP("127.0.0.1")},
-		AuthService:    NewAuthServer(st, rs, clk),
+		AuthService:    NewAuthServer(st, rs, clk, ""),
 		ProjectService: NewProjectServer(st, rs, clk, rbac),
 		AppService:     NewAppServer(st, rs, clk, sealer),
 		UnaryInterceptors: []grpc.UnaryServerInterceptor{

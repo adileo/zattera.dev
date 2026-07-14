@@ -310,7 +310,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		Logger:            log,
 		DNSNames:          serverDNSNames(cfg),
 		IPs:               serverIPs(cfg),
-		AuthService:       api.NewAuthServer(st, rs, clk),
+		AuthService:       api.NewAuthServer(st, rs, clk, cfg.Domain),
 		ProjectService:    api.NewProjectServer(st, rs, clk, rbac),
 		AppService:        api.NewAppServer(st, rs, clk, sealer),
 		PublicHostname:    apiPubHost,
@@ -413,6 +413,12 @@ func Run(ctx context.Context, cfg config.Config) error {
 		// running so a daemon restart re-adopts them without downtime.
 		if cfg.Dev && rt != nil {
 			defer reapManagedContainers(rt, log)
+		}
+
+		// Trust the embedded registry's TLS so this node can pull cluster-built
+		// images (co-located control+worker registry is at its own mesh addr).
+		if !cfg.Dev && rt != nil {
+			ensureDockerRegistryTrust(registryClientAddr(cfg), authority.CABundlePEM(), log)
 		}
 
 		// Registry credential for the co-located node: in production the
@@ -666,6 +672,12 @@ func runWorker(ctx context.Context, cfg config.Config, jr *joinResult, log *slog
 		rt = dk
 	}
 
+	// Trust the control node's embedded registry so image pulls over its TLS
+	// succeed (the join response carries the registry address + cluster CA).
+	if !cfg.Dev && rt != nil {
+		ensureDockerRegistryTrust(jr.RegistryAddr, jr.caPEM, log)
+	}
+
 	hostIP := jr.MeshIP
 	if hostIP == "" {
 		hostIP = "127.0.0.1"
@@ -758,6 +770,27 @@ func publicAPIHost(cfg config.Config) string {
 		return "" // ACME cannot issue for an IP/loopback
 	}
 	return host
+}
+
+// ensureDockerRegistryTrust writes the cluster CA into Docker's per-registry
+// trust store (/etc/docker/certs.d/<addr>/ca.crt) so this node can pull
+// cluster-built images over the embedded registry's TLS. Best-effort: a failure
+// is logged, not fatal. No-op in dev (the registry is plain HTTP).
+func ensureDockerRegistryTrust(registryAddr string, caPEM []byte, log *slog.Logger) {
+	if registryAddr == "" || len(caPEM) == 0 {
+		return
+	}
+	dir := filepath.Join("/etc/docker/certs.d", registryAddr)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Warn("registry trust: mkdir", "dir", dir, "err", err)
+		return
+	}
+	path := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(path, caPEM, 0o644); err != nil {
+		log.Warn("registry trust: write", "path", path, "err", err)
+		return
+	}
+	log.Info("registry CA trust installed", "registry", registryAddr)
 }
 
 // registryClientAddr is the "host:port" that builder + executor containers use
