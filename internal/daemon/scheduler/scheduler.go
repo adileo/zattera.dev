@@ -109,6 +109,14 @@ func (s *Scheduler) evaluate(ctx context.Context) error {
 	if err := s.reconcileOrphans(ctx, st); err != nil {
 		return err
 	}
+	// Allocate/free per-(project,env,node) bridge subnets (T-46).
+	if err := s.reconcileNetworks(ctx, st); err != nil {
+		return err
+	}
+	// Allocate/free a service VIP per environment that exposes a port (T-48).
+	if err := s.reconcileVIPs(ctx, st); err != nil {
+		return err
+	}
 	// Migrate/stop instances off DRAINING nodes and mark them DRAINED (T-29).
 	return s.reconcileDrains(ctx, st)
 }
