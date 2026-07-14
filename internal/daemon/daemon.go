@@ -36,6 +36,7 @@ import (
 	"github.com/zattera-dev/zattera/internal/daemon/nodeinfo"
 	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
 	crt "github.com/zattera-dev/zattera/internal/daemon/runtime"
+	"github.com/zattera-dev/zattera/internal/daemon/scheduler"
 	"github.com/zattera-dev/zattera/internal/daemon/secrets"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
@@ -234,6 +235,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 	// Node liveness (T-21): the leader turns livestate heartbeats into durable
 	// node status. evaluate() is a no-op on followers.
 	go api.NewLivenessMonitor(st, rs, live, clk, nodeID, log).Run(ctx)
+
+	// Scheduler (T-23): the leader reconciles desired replica counts into
+	// assignments. Leader-gated internally.
+	go scheduler.New(rs, clk, log).Run(ctx)
 
 	// Mesh (T-19): on a mesh-enabled control node, bring WireGuard up as the hub
 	// and keep its own peer set in sync. Single-node/dev disables the mesh.
