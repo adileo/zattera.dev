@@ -1,0 +1,44 @@
+name: pages
+
+# Publishes install/install.sh to GitHub Pages, which backs get.zattera.dev.
+# The script is served both as /install.sh and as the site root (index.html —
+# `curl | sh` ignores the content type), so both of these work:
+#   curl -sfL https://get.zattera.dev | sh -
+#   curl -sfL https://get.zattera.dev/install.sh | sh -
+on:
+  push:
+    branches: [main]
+    paths:
+      - "install/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble site
+        run: |
+          sh -n install/install.sh
+          mkdir -p _site
+          cp install/install.sh _site/install.sh
+          cp install/install.sh _site/index.html
+          touch _site/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

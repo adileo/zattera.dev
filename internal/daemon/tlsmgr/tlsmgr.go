@@ -97,7 +97,12 @@ func (m *Manager) GetTLSConfig() *tls.Config {
 	if m.dev {
 		return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: m.devGetCertificate}
 	}
-	return m.magic.TLSConfig()
+	// certmagic's TLSConfig only advertises its own ALPN (acme-tls/1); without
+	// the HTTP protocols every client that offers ALPN — all browsers — fails
+	// the handshake with "no application protocol".
+	cfg := m.magic.TLSConfig()
+	cfg.NextProtos = append([]string{"h2", "http/1.1"}, cfg.NextProtos...)
+	return cfg
 }
 
 // HTTP01Handler wraps h with the ACME HTTP-01 challenge solver for the :80

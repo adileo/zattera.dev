@@ -406,15 +406,37 @@ func Run(ctx context.Context, cfg config.Config) error {
 		} else {
 			rt = dk
 		}
+
+		// Registry credential for the co-located node: in production the
+		// embedded registry requires auth, but only joining workers are minted
+		// one (T-17) — without this, the control node's builder cannot push and
+		// its executor cannot pull cluster-built images. Mint a fresh credential
+		// each boot under the same registry/creds/<id> key the join flow uses.
+		var selfRegAuth *crt.RegistryAuth
+		if !cfg.Dev && rs.IsLeader() {
+			if pw, rerr := randomHex(24); rerr != nil {
+				log.Warn("registry self-credential: generate", "err", rerr)
+			} else if aerr := apply(ctx, rs, &clusterv1.Command{Mutation: &clusterv1.Command_PutKv{PutKv: &clusterv1.PutKV{
+				Key:             "registry/creds/" + nodeID,
+				Value:           []byte(api.HashToken(pw)),
+				ExpectedVersion: -1,
+			}}}); aerr != nil {
+				log.Warn("registry self-credential: store", "err", aerr)
+			} else {
+				selfRegAuth = &crt.RegistryAuth{Username: "node-" + nodeID, Password: pw, ServerAddress: registryClientAddr(cfg)}
+			}
+		}
+
 		na := agent.New(agent.Config{
-			NodeID:   nodeID,
-			Version:  version.Version,
-			Clock:    clk,
-			Logger:   log,
-			DiskPath: cfg.DataDir,
-			Runtime:  rt,
-			HostIP:   agentHostIP(cfg),
-			Dial:     localAgentDialer(authority, nodeID, cfg.API.Listen, log),
+			NodeID:       nodeID,
+			Version:      version.Version,
+			Clock:        clk,
+			Logger:       log,
+			DiskPath:     cfg.DataDir,
+			Runtime:      rt,
+			HostIP:       agentHostIP(cfg),
+			RegistryAuth: selfRegAuth,
+			Dial:         localAgentDialer(authority, nodeID, cfg.API.Listen, log),
 		})
 		go func() {
 			if err := na.Run(ctx); err != nil && ctx.Err() == nil {
@@ -436,7 +458,11 @@ func Run(ctx context.Context, cfg config.Config) error {
 				go capture.Run(ctx)
 				logSrv = agent.NewLogServer(store, na.Executor().MatchingStreams)
 			}
-			if err := startAgentLocalServer(ctx, authority, cfg, nodeID, rt, clk, logSrv, log); err != nil {
+			var pushAuth builder.RegistryAuth
+			if selfRegAuth != nil {
+				pushAuth = builder.RegistryAuth{Registry: selfRegAuth.ServerAddress, Username: selfRegAuth.Username, Password: selfRegAuth.Password}
+			}
+			if err := startAgentLocalServer(ctx, authority, cfg, nodeID, rt, clk, logSrv, pushAuth, log); err != nil {
 				log.Warn("agent-local service failed to start", "err", err)
 			}
 		}
@@ -770,7 +796,7 @@ func newAgentLocalConnect(authority *ca.CA, nodeID string, _ *slog.Logger) func(
 // mTLS) serving builds + exec/top/port-forward. The build sub-server needs a
 // container runtime + a source fetcher that pulls tarballs from the control
 // blob endpoint over the same node identity.
-func startAgentLocalServer(ctx context.Context, authority *ca.CA, cfg config.Config, nodeID string, rt crt.ContainerRuntime, clk clock.Clock, logSrv *agent.LogServer, log *slog.Logger) error {
+func startAgentLocalServer(ctx context.Context, authority *ca.CA, cfg config.Config, nodeID string, rt crt.ContainerRuntime, clk clock.Clock, logSrv *agent.LogServer, pushAuth builder.RegistryAuth, log *slog.Logger) error {
 	tlsCfg := nodeClientTLS(authority, nodeID, "127.0.0.1")
 	fetch := agent.HTTPSourceFetcher{Client: &http.Client{
 		Timeout:   10 * time.Minute,
@@ -782,6 +808,7 @@ func startAgentLocalServer(ctx context.Context, authority *ca.CA, cfg config.Con
 	buildSrv := agent.NewBuildServer(agent.BuildServerConfig{
 		Builder:          bld,
 		Fetch:            fetch,
+		RegistryAuth:     pushAuth,
 		RegistryInsecure: cfg.Registry.InsecureHTTP,
 		LocalLoad:        cfg.Dev,
 		Logger:           log,

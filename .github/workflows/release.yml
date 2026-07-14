@@ -1,0 +1,37 @@
+name: release
+
+# Cut a release by pushing a tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+# Builds the cross matrix (make cross), checksums it, and publishes a GitHub
+# Release. get.zattera.dev resolves "latest" via GitHub's
+# releases/latest/download/ redirect, so publishing here is all it takes.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs history/tags
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Gate on unit tests
+        run: go test ./...
+      - name: Build release matrix
+        run: make cross VERSION=${{ github.ref_name }}
+      - name: Checksums
+        run: cd dist && sha256sum * > sha256sums.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

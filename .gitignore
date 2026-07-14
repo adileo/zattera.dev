@@ -24,3 +24,11 @@ coverage.html
 # Env / local overrides
 .env
 .env.local
+
+PERSONAL.md
+TEST_SERVER.md
+
+# Real-cluster e2e scripts: credentials + per-cluster state
+/zt
+test/real-cluster/servers.env
+test/real-cluster/.state/
