@@ -3,6 +3,8 @@ package raftstore
 import (
 	"fmt"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 )
 
@@ -51,7 +53,7 @@ func (f *FSM) apply(cmd *clusterv1.Command) error {
 	case *clusterv1.Command_PutDeployment:
 		s.PutDeployment(m.PutDeployment.GetDeployment())
 	case *clusterv1.Command_SetDeploymentPhase:
-		return f.applySetDeploymentPhase(m.SetDeploymentPhase)
+		return f.applySetDeploymentPhase(cmd.GetTime(), m.SetDeploymentPhase)
 	case *clusterv1.Command_PromoteRelease:
 		return f.applyPromoteRelease(m.PromoteRelease)
 	case *clusterv1.Command_PutBuild:
@@ -156,10 +158,15 @@ func (f *FSM) apply(cmd *clusterv1.Command) error {
 	return nil
 }
 
-func (f *FSM) applySetDeploymentPhase(m *clusterv1.SetDeploymentPhase) error {
+func (f *FSM) applySetDeploymentPhase(now *timestamppb.Timestamp, m *clusterv1.SetDeploymentPhase) error {
 	d, ok := f.store.Deployment(m.GetDeploymentId())
 	if !ok {
 		return fmt.Errorf("raftstore: deployment %s not found", m.GetDeploymentId())
+	}
+	// meta.updated_at marks phase entry — the orchestrator times phase deadlines
+	// (healthcheck grace, drain) from it, so bump it deterministically here.
+	if now != nil {
+		d.GetMeta().UpdatedAt = now
 	}
 	d.Phase = m.GetPhase()
 	if m.GetError() != "" {

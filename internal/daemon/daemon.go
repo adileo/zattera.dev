@@ -241,6 +241,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 	// assignments. Leader-gated internally.
 	go scheduler.New(rs, clk, log).Run(ctx)
 
+	// Deployment orchestrator (T-26): the leader drives red/green deployments
+	// through their phases. Leader-gated internally.
+	go scheduler.NewOrchestrator(rs, clk, log).Run(ctx)
+
 	// Mesh (T-19): on a mesh-enabled control node, bring WireGuard up as the hub
 	// and keep its own peer set in sync. Single-node/dev disables the mesh.
 	if !cfg.Mesh.Disabled && rs.IsLeader() {
