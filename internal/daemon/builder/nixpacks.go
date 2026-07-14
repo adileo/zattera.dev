@@ -3,6 +3,7 @@ package builder
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,25 @@ func (b *Builder) BuildNixpacks(ctx context.Context, req RunBuildRequest, events
 	nixReq.ContextDir = "."
 	nixReq.Dockerfile = "Dockerfile"
 	return b.Build(ctx, nixReq, events)
+}
+
+// BuildFromSource unpacks a source tarball into a scratch dir, resolves the
+// build strategy (Dockerfile vs nixpacks), and builds it. This is the entry
+// point the agent's build server calls after fetching the tarball from control.
+func (b *Builder) BuildFromSource(ctx context.Context, req RunBuildRequest, src io.Reader, events chan<- BuildEvent) (*BuildResult, error) {
+	dir, err := os.MkdirTemp(b.dataDir, "src-*")
+	if err != nil {
+		return nil, b.fail(events, fmt.Errorf("builder: scratch dir: %w", err))
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	if err := unpackSource(dir, src); err != nil {
+		return nil, b.fail(events, err)
+	}
+	req.SourceDir = dir
+	if ResolveBuildType(filepath.Join(dir, orDot(req.ContextDir))) == BuildNixpacks {
+		return b.BuildNixpacks(ctx, req, events)
+	}
+	return b.Build(ctx, req, events)
 }
 
 // plan runs the nixpacks planner container over sourceDir, streaming its logs

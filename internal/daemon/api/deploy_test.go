@@ -17,7 +17,7 @@ func TestDeploy(t *testing.T) {
 	const depEnvID = "env-deploy"
 	rs := raftstore.NewTestStore(t)
 	st := rs.State()
-	s := NewDeployServer(st, rs, clock.NewFake())
+	s := NewDeployServer(st, rs, clock.NewFake(), t.TempDir())
 	st.PutEnvironment(&zatterav1.Environment{
 		Meta:      &zatterav1.Meta{Id: depEnvID},
 		ProjectId: "p1",

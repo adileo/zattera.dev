@@ -54,7 +54,7 @@ func deployHarness(t *testing.T) (addr string, caPEM []byte, adminToken string) 
 		AuthService:    api.NewAuthServer(st, rs, clk),
 		ProjectService: api.NewProjectServer(st, rs, clk, rbac),
 		AppService:     api.NewAppServer(st, rs, clk, sealer),
-		DeployService:  api.NewDeployServer(st, rs, clk),
+		DeployService:  api.NewDeployServer(st, rs, clk, t.TempDir()),
 		NodeService:    api.NewNodeServer(st, rs, clk, authority),
 		UnaryInterceptors: []grpc.UnaryServerInterceptor{
 			authn.UnaryInterceptor, rbac.UnaryInterceptor,

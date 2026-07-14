@@ -51,6 +51,9 @@ type RunBuildRequest struct {
 	Platforms  []string     // target OCI platforms; empty → builder's native
 	SourceDir  string       // unpacked source root
 	Auth       RegistryAuth // creds for pushing to the registry
+	// ImageRef, when set, is the exact push reference; otherwise it is derived
+	// from Registry/Project/App/BuildID.
+	ImageRef string
 	// RegistryInsecure pushes over plain HTTP (integration tests only).
 	RegistryInsecure bool
 }
@@ -287,7 +290,10 @@ func (b *Builder) Build(ctx context.Context, req RunBuildRequest, events chan<- 
 	if dockerfile == "" {
 		dockerfile = "Dockerfile"
 	}
-	imageRef := fmt.Sprintf("%s/%s/%s:%s", req.Registry, req.Project, req.App, req.BuildID)
+	imageRef := req.ImageRef
+	if imageRef == "" {
+		imageRef = fmt.Sprintf("%s/%s/%s:%s", req.Registry, req.Project, req.App, req.BuildID)
+	}
 
 	attrs := map[string]string{
 		"filename": dockerfile,

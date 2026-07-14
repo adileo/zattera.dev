@@ -23,14 +23,16 @@ import (
 // the deployment through its phases; this service only creates work.
 type DeployServer struct {
 	zatterav1.UnimplementedDeployServiceServer
-	store *state.Store
-	raft  Applier
-	clock clock.Clock
+	store      *state.Store
+	raft       Applier
+	clock      clock.Clock
+	uploadsDir string // where UploadSource spools source tarballs
 }
 
-// NewDeployServer builds the deploy service.
-func NewDeployServer(store *state.Store, raft Applier, clk clock.Clock) *DeployServer {
-	return &DeployServer{store: store, raft: raft, clock: clk}
+// NewDeployServer builds the deploy service. uploadsDir is where UploadSource
+// spools source tarballs (typically <data-dir>/uploads).
+func NewDeployServer(store *state.Store, raft Applier, clk clock.Clock, uploadsDir string) *DeployServer {
+	return &DeployServer{store: store, raft: raft, clock: clk, uploadsDir: uploadsDir}
 }
 
 // Deploy creates a release from an image ref (or completed build) and a PENDING

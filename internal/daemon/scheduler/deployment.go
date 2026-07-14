@@ -143,6 +143,10 @@ func (o *Orchestrator) reconcile(ctx context.Context, d *zatterav1.Deployment) e
 		if rel.GetService().GetStateful() {
 			return o.abort(ctx, d, "stateful services use stop-then-start deploys (T-63), not red/green")
 		}
+		// Source deploys carry a build_id: build the image before placing.
+		if d.GetBuildId() != "" && rel.GetImageRef() == "" {
+			return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_BUILDING, "")
+		}
 		if rel.GetImageRef() == "" {
 			return o.abort(ctx, d, "release has no image ref")
 		}
@@ -150,6 +154,9 @@ func (o *Orchestrator) reconcile(ctx context.Context, d *zatterav1.Deployment) e
 			return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PROMOTING, "")
 		}
 		return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PLACING, "")
+
+	case zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_BUILDING:
+		return o.checkBuild(ctx, rel, d)
 
 	case zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PLACING:
 		return o.place(ctx, st, env, rel, d)
@@ -167,6 +174,33 @@ func (o *Orchestrator) reconcile(ctx context.Context, d *zatterav1.Deployment) e
 		return o.drain(ctx, st, d)
 	}
 	return nil
+}
+
+// checkBuild gates a source deployment on its build: it stays in BUILDING until
+// the build succeeds (then it stamps the built image onto the release and
+// advances to PLACING) or fails (then the deployment fails).
+func (o *Orchestrator) checkBuild(ctx context.Context, rel *zatterav1.Release, d *zatterav1.Deployment) error {
+	b, ok := o.store.State().Build(d.GetBuildId())
+	if !ok {
+		return o.abort(ctx, d, "build not found")
+	}
+	switch b.GetStatus() {
+	case zatterav1.BuildStatus_BUILD_STATUS_SUCCEEDED:
+		if b.GetImageRef() == "" {
+			return o.abort(ctx, d, "build produced no image")
+		}
+		if rel.GetImageRef() != b.GetImageRef() {
+			rel.ImageRef = b.GetImageRef()
+			if err := o.apply(ctx, &clusterv1.Command{Mutation: &clusterv1.Command_PutRelease{PutRelease: &clusterv1.PutRelease{Release: rel}}}); err != nil {
+				return err
+			}
+		}
+		return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PLACING, "")
+	case zatterav1.BuildStatus_BUILD_STATUS_FAILED, zatterav1.BuildStatus_BUILD_STATUS_CANCELED:
+		return o.abort(ctx, d, "build failed: "+b.GetError())
+	default:
+		return nil // QUEUED / RUNNING: keep waiting
+	}
 }
 
 // place ensures the green replica set exists, then advances to STARTING.
