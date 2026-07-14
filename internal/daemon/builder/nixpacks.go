@@ -133,6 +133,10 @@ func (b *Builder) plan(ctx context.Context, contextDir string, events chan<- Bui
 			{HostPath: contextDir, Target: "/src"},
 			{HostPath: binPath, Target: "/usr/local/bin/nixpacks", ReadOnly: true},
 		},
+		// Run as the caller so the generated .nixpacks/ files are owned by whoever
+		// owns the source dir, not root — otherwise the daemon (or a test) cannot
+		// clean them up on a bind mount.
+		User:   fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		Labels: map[string]string{"zattera.system": "nixpacks"},
 	})
 	if err != nil {
