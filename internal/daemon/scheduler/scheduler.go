@@ -104,7 +104,9 @@ func (s *Scheduler) evaluate(ctx context.Context) error {
 			return err // propagate ErrNotLeader; log others inside
 		}
 	}
-	return nil
+	// Reap assignments whose env/release was deleted (T-27); these no longer
+	// belong to any environment the loop above visits.
+	return s.reconcileOrphans(ctx, st)
 }
 
 // evaluateEnv converges one environment's active-release replica count.
