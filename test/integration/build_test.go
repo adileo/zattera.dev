@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -26,14 +27,14 @@ func TestDockerfileBuild(t *testing.T) {
 	if err != nil {
 		t.Skipf("docker runtime: %v", err)
 	}
-	addr, reg := startRegistry(t)
+	r := startRegistry(t)
 
 	b := builder.New(rt, clock.Real{}, t.TempDir(), "", nil)
 	req := builder.RunBuildRequest{
 		BuildID:          "build1",
 		Project:          "demo",
 		App:              "go-hello",
-		Registry:         addr,
+		Registry:         r.push,
 		SourceDir:        FixtureDir(t, "go-hello"),
 		RegistryInsecure: true,
 	}
@@ -48,10 +49,12 @@ func TestDockerfileBuild(t *testing.T) {
 	if res.ImageDigest == "" {
 		t.Fatal("build produced no image digest")
 	}
-	t.Cleanup(func() { _ = reg.Close() })
+	t.Cleanup(func() { _ = r.reg.Close() })
 
-	// The image is pullable and runs, serving the fixture's HTTP contract.
-	ref := addr + "/demo/go-hello:build1"
+	// The image is pullable and runs, serving the fixture's HTTP contract. The
+	// host pulls over loopback (auto-insecure); the push above went via the
+	// bridge gateway, but both addresses hit the same registry + repo.
+	ref := r.host + "/demo/go-hello:build1"
 	if out, err := exec.CommandContext(ctx, "docker", "pull", ref).CombinedOutput(); err != nil {
 		t.Fatalf("docker pull: %v\n%s", err, out)
 	}
@@ -81,15 +84,15 @@ func TestDockerfileBuildEmulated(t *testing.T) {
 	if err != nil {
 		t.Skipf("docker runtime: %v", err)
 	}
-	addr, reg := startRegistry(t)
-	t.Cleanup(func() { _ = reg.Close() })
+	r := startRegistry(t)
+	t.Cleanup(func() { _ = r.reg.Close() })
 
 	b := builder.New(rt, clock.Real{}, t.TempDir(), "", nil)
 	req := builder.RunBuildRequest{
 		BuildID:          "multi1",
 		Project:          "demo",
 		App:              "go-hello",
-		Registry:         addr,
+		Registry:         r.push,
 		SourceDir:        FixtureDir(t, "go-hello"),
 		Platforms:        []string{"linux/amd64", "linux/arm64"},
 		RegistryInsecure: true,
@@ -105,7 +108,7 @@ func TestDockerfileBuildEmulated(t *testing.T) {
 		t.Fatal("no index digest")
 	}
 
-	plats, err := reg.Manifests.Platforms("demo/go-hello", "multi1")
+	plats, err := r.reg.Manifests.Platforms("demo/go-hello", "multi1")
 	if err != nil {
 		t.Fatalf("platforms: %v", err)
 	}
@@ -126,19 +129,24 @@ func TestNixpacksBuild(t *testing.T) {
 	if err != nil {
 		t.Skipf("docker runtime: %v", err)
 	}
-	src := FixtureDir(t, "node-hello")
+	// The planner writes .nixpacks/ into the source tree, so build from a copy
+	// rather than mutating the repo fixture.
+	src := t.TempDir()
+	if err := os.CopyFS(src, os.DirFS(FixtureDir(t, "node-hello"))); err != nil {
+		t.Fatalf("copy fixture: %v", err)
+	}
 	if builder.ResolveBuildType(src) != builder.BuildNixpacks {
 		t.Fatal("node-hello should resolve to a nixpacks build")
 	}
-	addr, reg := startRegistry(t)
-	t.Cleanup(func() { _ = reg.Close() })
+	r := startRegistry(t)
+	t.Cleanup(func() { _ = r.reg.Close() })
 
 	b := builder.New(rt, clock.Real{}, t.TempDir(), "", nil)
 	req := builder.RunBuildRequest{
 		BuildID:          "nix1",
 		Project:          "demo",
 		App:              "node-hello",
-		Registry:         addr,
+		Registry:         r.push,
 		SourceDir:        src,
 		RegistryInsecure: true,
 	}
@@ -153,7 +161,7 @@ func TestNixpacksBuild(t *testing.T) {
 		t.Fatal("no image digest")
 	}
 
-	ref := addr + "/demo/node-hello:nix1"
+	ref := r.host + "/demo/node-hello:nix1"
 	if out, err := exec.CommandContext(ctx, "docker", "pull", ref).CombinedOutput(); err != nil {
 		t.Fatalf("docker pull: %v\n%s", err, out)
 	}

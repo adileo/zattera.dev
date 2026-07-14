@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,16 +18,32 @@ import (
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 )
 
-// startRegistry serves the embedded registry over plain HTTP on a loopback
-// port. Docker treats 127.0.0.0/8 registries as insecure by default, so no
-// daemon configuration is needed. Returns the host:port and the live registry.
-func startRegistry(t *testing.T) (string, *registry.Registry) {
+// testRegistry is a running embedded registry with the two addresses that reach
+// it. The registry binds 0.0.0.0 so it is reachable both from the host loopback
+// and, via the Docker bridge gateway, from inside build containers.
+type testRegistry struct {
+	// host is "127.0.0.1:PORT": used by the host Docker daemon (docker
+	// build/push/pull). 127.0.0.0/8 is insecure by default, so no daemon config.
+	host string
+	// push is "GATEWAY:PORT": the same registry reached via the Docker bridge
+	// gateway, so a containerized builder (buildkitd, buildx) can push to it.
+	// The host part of an image ref is only routing — the repo/tag stored is the
+	// same, so a push via this address is pullable via host.
+	push string
+	reg  *registry.Registry
+}
+
+// startRegistry serves the embedded registry over plain HTTP on all interfaces
+// (a random port). A containerized buildkitd cannot reach a host-loopback
+// registry, so pushes must target the bridge gateway; the host still uses
+// loopback. Returns both addresses and the live registry.
+func startRegistry(t *testing.T) testRegistry {
 	t.Helper()
 	reg, err := registry.New(t.TempDir(), clock.Real{}, nil, nil)
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -36,7 +53,29 @@ func startRegistry(t *testing.T) (string, *registry.Registry) {
 		_ = srv.Close()
 		_ = reg.Close()
 	})
-	return ln.Addr().String(), reg
+	port := ln.Addr().(*net.TCPAddr).Port
+	return testRegistry{
+		host: fmt.Sprintf("127.0.0.1:%d", port),
+		push: fmt.Sprintf("%s:%d", dockerHostAddr(t), port),
+		reg:  reg,
+	}
+}
+
+// dockerHostAddr returns an address at which a container reaches host services
+// bound to 0.0.0.0. On macOS/Windows Docker Desktop that is the automatically
+// provided host.docker.internal; on Linux it is the default bridge gateway
+// (e.g. 172.17.0.1), directly reachable from a container on that bridge.
+func dockerHostAddr(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return "host.docker.internal"
+	}
+	out, err := exec.Command("docker", "network", "inspect", "bridge",
+		"--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}").Output()
+	if gw := strings.TrimSpace(string(out)); err == nil && gw != "" {
+		return gw
+	}
+	return "172.17.0.1"
 }
 
 // TestRegistryPushPull is the T-32 acceptance: a real docker push + pull
@@ -46,8 +85,8 @@ func TestRegistryPushPull(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
-	addr, reg := startRegistry(t)
-	ref := addr + "/demo/go-hello:v1"
+	r := startRegistry(t)
+	ref := r.host + "/demo/go-hello:v1"
 
 	build := exec.CommandContext(ctx, "docker", "build", "-t", ref, FixtureDir(t, "go-hello"))
 	if out, err := build.CombinedOutput(); err != nil {
@@ -60,7 +99,7 @@ func TestRegistryPushPull(t *testing.T) {
 	}
 
 	// tags/list reflects the pushed tag.
-	tags := httpGet(t, "http://"+addr+"/v2/demo/go-hello/tags/list")
+	tags := httpGet(t, "http://"+r.host+"/v2/demo/go-hello/tags/list")
 	if !strings.Contains(tags, `"v1"`) {
 		t.Fatalf("tags/list missing v1: %s", tags)
 	}
@@ -76,7 +115,7 @@ func TestRegistryPushPull(t *testing.T) {
 	// A single-arch push stores a plain manifest; Platforms reports at most the
 	// one platform (config-derived arch is out of scope here, so it may be one
 	// entry or none — the manifest must at least resolve).
-	if _, _, _, err := reg.Manifests.GetManifest("demo/go-hello", "v1"); err != nil {
+	if _, _, _, err := r.reg.Manifests.GetManifest("demo/go-hello", "v1"); err != nil {
 		t.Fatalf("manifest not resolvable after push: %v", err)
 	}
 }
@@ -99,8 +138,8 @@ func TestRegistryMultiArchIndex(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "buildx", "rm", "-f", builder).Run() })
 
-	addr, reg := startRegistry(t)
-	ref := addr + "/demo/go-hello:multi"
+	r := startRegistry(t)
+	ref := r.push + "/demo/go-hello:multi"
 
 	build := exec.CommandContext(ctx, "docker", "buildx", "build",
 		"--builder", builder,
@@ -112,7 +151,7 @@ func TestRegistryMultiArchIndex(t *testing.T) {
 	}
 
 	// The registry served an index; both architectures resolve.
-	plats, err := reg.Manifests.Platforms("demo/go-hello", "multi")
+	plats, err := r.reg.Manifests.Platforms("demo/go-hello", "multi")
 	if err != nil {
 		t.Fatalf("platforms: %v", err)
 	}
@@ -120,7 +159,7 @@ func TestRegistryMultiArchIndex(t *testing.T) {
 		t.Fatalf("expected both arches, got %v", plats)
 	}
 	for _, p := range []string{"linux/amd64", "linux/arm64"} {
-		if _, _, err := reg.Manifests.ResolveManifest("demo/go-hello", "multi", p); err != nil {
+		if _, _, err := r.reg.Manifests.ResolveManifest("demo/go-hello", "multi", p); err != nil {
 			t.Fatalf("resolve %s: %v", p, err)
 		}
 	}
