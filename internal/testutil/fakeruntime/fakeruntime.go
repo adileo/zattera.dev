@@ -103,6 +103,11 @@ func (f *Fake) EnsureImage(_ context.Context, ref string, _ *runtime.RegistryAut
 	return nil
 }
 
+func (f *Fake) ImageLoad(_ context.Context, tar io.Reader) error {
+	_, _ = io.Copy(io.Discard, tar)
+	return nil
+}
+
 func (f *Fake) CreateContainer(_ context.Context, spec runtime.ContainerSpec) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

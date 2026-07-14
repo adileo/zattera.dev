@@ -89,6 +89,10 @@ type BuildDispatcherConfig struct {
 	SourceURLBase string
 	// RegistryAddr is the embedded registry "host:port" images push to.
 	RegistryAddr string
+	// LocalLoad means builders load images into the local Docker store instead
+	// of pushing to the registry (single-node/dev, T-54); deploy by tag, not by
+	// registry digest, since a loaded image has no registry digest.
+	LocalLoad bool
 }
 
 // BuildDispatcher assigns QUEUED builds to builder nodes, streams their events,
@@ -273,7 +277,13 @@ func (d *BuildDispatcher) dispatch(ctx context.Context, b *zatterav1.Build) {
 		return
 	}
 	// Deploy the digest-pinned reference so the exact index/manifest is run.
-	d.succeed(ctx, b, repo+"@"+digest)
+	// With local-load there is no registry digest, so deploy the tag ref (the
+	// image was loaded into the node's Docker store under exactly this tag).
+	deployRef := repo + "@" + digest
+	if d.cfg.LocalLoad {
+		deployRef = req.PushImageRef
+	}
+	d.succeed(ctx, b, deployRef)
 }
 
 // recv reads the next event, treating a silence longer than builderLostTimeout

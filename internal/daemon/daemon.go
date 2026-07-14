@@ -317,6 +317,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		scheduler.BuildDispatcherConfig{
 			SourceURLBase: "https://" + net.JoinHostPort(agentHostIP(cfg), apiPortStr) + "/internal/blobs/",
 			RegistryAddr:  registryClientAddr(cfg),
+			LocalLoad:     cfg.Dev,
 		}, log).Run(ctx)
 
 	// Mesh (T-19): on a mesh-enabled control node, bring WireGuard up as the hub
@@ -682,6 +683,7 @@ func startAgentLocalServer(ctx context.Context, authority *ca.CA, cfg config.Con
 		Builder:          bld,
 		Fetch:            fetch,
 		RegistryInsecure: cfg.Registry.InsecureHTTP,
+		LocalLoad:        cfg.Dev,
 		Logger:           log,
 	})
 	execSrv := agent.NewExecServer(rt, log)

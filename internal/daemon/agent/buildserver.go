@@ -27,11 +27,12 @@ type SourceFetcher interface {
 // (T-41 logs, T-49 exec, T-65 volumes) via the same embedded server.
 type BuildServer struct {
 	clusterv1.UnimplementedAgentLocalServiceServer
-	builder  *builder.Builder
-	fetch    SourceFetcher
-	regAuth  builder.RegistryAuth
-	insecure bool
-	log      *slog.Logger
+	builder   *builder.Builder
+	fetch     SourceFetcher
+	regAuth   builder.RegistryAuth
+	insecure  bool
+	loadLocal bool
+	log       *slog.Logger
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
@@ -43,7 +44,10 @@ type BuildServerConfig struct {
 	Fetch            SourceFetcher
 	RegistryAuth     builder.RegistryAuth
 	RegistryInsecure bool
-	Logger           *slog.Logger
+	// LocalLoad loads the built image into the local Docker store instead of
+	// pushing to a registry (single-node/dev, T-54).
+	LocalLoad bool
+	Logger    *slog.Logger
 }
 
 // NewBuildServer constructs the build server.
@@ -55,8 +59,9 @@ func NewBuildServer(cfg BuildServerConfig) *BuildServer {
 	return &BuildServer{
 		builder: cfg.Builder, fetch: cfg.Fetch,
 		regAuth: cfg.RegistryAuth, insecure: cfg.RegistryInsecure,
-		log:     log,
-		cancels: map[string]context.CancelFunc{},
+		loadLocal: cfg.LocalLoad,
+		log:       log,
+		cancels:   map[string]context.CancelFunc{},
 	}
 }
 
@@ -85,6 +90,7 @@ func (s *BuildServer) RunBuild(req *clusterv1.RunBuildRequest, stream grpc.Serve
 		BuildArgs:        req.GetBuildArgs(),
 		Auth:             s.regAuth,
 		RegistryInsecure: s.insecure,
+		LoadLocally:      s.loadLocal,
 	}
 
 	events := make(chan builder.BuildEvent, 128)

@@ -191,6 +191,10 @@ type NetworkInfo struct {
 //   - Exec blocks until the process exits and returns its exit code.
 type ContainerRuntime interface {
 	EnsureImage(ctx context.Context, ref string, auth *RegistryAuth, progress func(status string)) error
+	// ImageLoad imports an image tar stream (docker-save format) into the local
+	// image store. Used by the dev builder to load a freshly built image without
+	// a registry round-trip.
+	ImageLoad(ctx context.Context, tar io.Reader) error
 	CreateContainer(ctx context.Context, spec ContainerSpec) (id string, err error)
 	StartContainer(ctx context.Context, id string) error
 	StopContainer(ctx context.Context, id string, timeout time.Duration) error

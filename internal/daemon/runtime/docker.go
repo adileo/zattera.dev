@@ -49,6 +49,17 @@ func (d *Docker) Ping(ctx context.Context) error {
 	return nil
 }
 
+// ImageLoad imports a docker-save-format tar stream into the local image store.
+func (d *Docker) ImageLoad(ctx context.Context, tar io.Reader) error {
+	resp, err := d.cli.ImageLoad(ctx, tar)
+	if err != nil {
+		return fmt.Errorf("runtime: image load: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body) // drain so the load completes
+	return nil
+}
+
 // EnsureImage pulls ref unless it is already present locally. Progress lines are
 // forwarded to progress (may be nil). Context cancellation aborts the pull.
 func (d *Docker) EnsureImage(ctx context.Context, ref string, auth *RegistryAuth, progress func(status string)) error {

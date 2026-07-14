@@ -3,6 +3,7 @@ package builder
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -63,6 +64,10 @@ type RunBuildRequest struct {
 	ImageRef string
 	// RegistryInsecure pushes over plain HTTP (integration tests only).
 	RegistryInsecure bool
+	// LoadLocally loads the built image straight into the local Docker image
+	// store instead of pushing it to a registry (single-node/dev, T-54): the
+	// host Docker daemon cannot pull from the insecure loopback registry.
+	LoadLocally bool
 }
 
 // RegistryAuth carries push credentials for the target registry.
@@ -331,20 +336,36 @@ func (b *Builder) Build(ctx context.Context, req RunBuildRequest, events chan<- 
 		attrs["build-arg:"+k] = v
 	}
 
-	exportAttrs := map[string]string{"name": imageRef, "push": "true"}
-	if req.RegistryInsecure {
-		exportAttrs["registry.insecure"] = "true"
+	// Export path: push to the registry (production) or load directly into the
+	// local Docker image store (dev — the host cannot pull from the insecure
+	// loopback registry, T-54).
+	var export bkclient.ExportEntry
+	loadDone := make(chan error, 1)
+	if req.LoadLocally {
+		pr, pw := io.Pipe()
+		export = bkclient.ExportEntry{
+			Type:  bkclient.ExporterDocker,
+			Attrs: map[string]string{"name": imageRef},
+			Output: func(map[string]string) (io.WriteCloser, error) {
+				go func() { loadDone <- b.rt.ImageLoad(ctx, pr) }()
+				return pw, nil
+			},
+		}
+	} else {
+		exportAttrs := map[string]string{"name": imageRef, "push": "true"}
+		if req.RegistryInsecure {
+			exportAttrs["registry.insecure"] = "true"
+		}
+		export = bkclient.ExportEntry{Type: bkclient.ExporterImage, Attrs: exportAttrs}
+		loadDone <- nil // nothing to wait for
 	}
 
 	solveOpt := bkclient.SolveOpt{
 		Frontend:      dockerfileFrontend,
 		FrontendAttrs: attrs,
 		LocalMounts:   map[string]fsutil.FS{"context": srcFS, "dockerfile": srcFS},
-		Exports: []bkclient.ExportEntry{{
-			Type:  bkclient.ExporterImage,
-			Attrs: exportAttrs,
-		}},
-		Session: []session.Attachable{dockerAuth(req.Auth)},
+		Exports:       []bkclient.ExportEntry{export},
+		Session:       []session.Attachable{dockerAuth(req.Auth)},
 	}
 
 	statusCh := make(chan *bkclient.SolveStatus)
@@ -363,8 +384,16 @@ func (b *Builder) Build(ctx context.Context, req RunBuildRequest, events chan<- 
 	if err != nil {
 		return nil, b.fail(events, fmt.Errorf("builder: solve: %w", err))
 	}
+	// buildkit has closed the docker-export writer by now; wait for the local
+	// load to finish before reporting success.
+	if lerr := <-loadDone; lerr != nil {
+		return nil, b.fail(events, fmt.Errorf("builder: load image: %w", lerr))
+	}
 
 	digest := resp.ExporterResponse[exptypes.ExporterImageDigestKey]
+	if digest == "" {
+		digest = resp.ExporterResponse["containerimage.config.digest"]
+	}
 	res := &BuildResult{ImageRef: imageRef, ImageDigest: digest, Platforms: platforms}
 	emit(events, BuildEvent{Done: true, Success: true, ImageRef: imageRef, ImageDigest: digest, Platforms: platforms})
 	return res, nil
