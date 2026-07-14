@@ -32,6 +32,19 @@ type Orchestrator struct {
 	store *raftstore.Store
 	clock clock.Clock
 	log   *slog.Logger
+	// drainDur overrides the blue-drain window when > 0 (chaos/tests use a short
+	// window; production keeps the 10m default).
+	drainDur time.Duration
+}
+
+// SetDrainWindow overrides the blue-drain window (0 restores the default).
+func (o *Orchestrator) SetDrainWindow(d time.Duration) { o.drainDur = d }
+
+func (o *Orchestrator) drainWindowDur() time.Duration {
+	if o.drainDur > 0 {
+		return o.drainDur
+	}
+	return drainWindow
 }
 
 // NewOrchestrator builds the deployment orchestrator.
@@ -233,7 +246,7 @@ func (o *Orchestrator) promote(ctx context.Context, d *zatterav1.Deployment) err
 		DeploymentId:  d.GetMeta().GetId(),
 		Phase:         zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_DRAINING_OLD,
 		PromotedAt:    timestamppb.New(now),
-		DrainDeadline: timestamppb.New(now.Add(drainWindow)),
+		DrainDeadline: timestamppb.New(now.Add(o.drainWindowDur())),
 	}}})
 }
 
