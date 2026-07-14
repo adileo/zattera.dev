@@ -944,12 +944,28 @@ a table, one sub-test each.
 
 ---
 
-# Phase 4 — Builds & embedded registry
+# Phase 4 — Builds & embedded registry (multi-arch)
 
 **Exit criterion:** `zattera deploy` from `test/fixtures/apps/go-hello`
-(tarball upload) builds via BuildKit, pushes to the embedded registry, and
-red/green-deploys the result; a GitHub push does the same end-to-end
-(webhook-simulated in tests).
+(tarball upload) builds via BuildKit **for every architecture present in the
+cluster** (an OCI image index / multi-arch manifest list), pushes to the
+embedded registry, and red/green-deploys the result onto nodes of any
+supported architecture; a GitHub push does the same end-to-end
+(webhook-simulated in tests). A mixed amd64/arm64 cluster can run the same
+release, and the scheduler never places a workload on a node whose
+architecture the release does not support.
+
+**Multi-arch design (read once, applies across T-31..T-35, T-87, T-88):**
+- Node architecture is `Node.os_arch` (`"linux/amd64"`, already in the proto),
+  reported at boot and merged at join (T-87 makes this reliable).
+- A `Release` carries the set of OCI platforms its image can run on
+  (`Release.platforms`, added in T-87). Empty = unconstrained (legacy /
+  "runs anywhere") so pre-existing single-arch flows keep working.
+- Placement (T-88) filters candidate nodes to those whose `os_arch` is in the
+  release's platform set. Docker's `EnsureImage` (T-15) then pulls the matching
+  arch from the manifest list automatically — no agent change needed.
+- Builds (T-33/T-35) target multiple platforms and push ONE image index; the
+  registry (T-32) stores/serves image indexes and refcounts through them.
 
 ### T-31 — Registry: CAS blob store + OCI push protocol
 Phase 4 · Depends: T-02 · Size: M
@@ -969,7 +985,11 @@ Phase 4 · Depends: T-02 · Size: M
 5. Upload-session janitor: expire after 24h (Clock).
 **Gotchas:** `<name>` may contain `/` (`myproject/api`) — wildcard routing,
 not single-segment; stream bodies (multi-GB), never buffer; digest
-verification is non-negotiable.
+verification is non-negotiable. Blob storage is content-addressed by digest,
+so identical layers shared across architectures of a multi-arch image (or
+across repos) are stored exactly once for free — do NOT key blobs by repo or
+platform. Manifests and image indexes are NOT uploaded through this blob path
+(they go to `/manifests/`, T-32); this task only moves config + layer blobs.
 **Tests:** unit — session state machine, chunked+monolithic upload, digest
 mismatch rejection, crash-safety (partial tmp file, restart, no corrupt
 blob).
@@ -983,16 +1003,31 @@ Phase 4 · Depends: T-31 · Size: M
 1. Manifests stored as blobs; tag→digest index + per-repo refcounts in a
    registry-local bbolt file (`registry/meta.db` — NOT raft). Manifest PUT
    validates every referenced blob exists (config + layers; accept both
-   OCI and Docker v2 schema media types); manifest lists (multi-arch)
-   validated one level deep.
+   OCI and Docker v2 schema media types).
+   **Multi-arch:** also accept image indexes / manifest lists
+   (`application/vnd.oci.image.index.v1+json`,
+   `application/vnd.docker.distribution.manifest.list.v2+json`). An index PUT
+   validates that every child manifest it references already exists in this
+   repo (one level deep — children are pushed before the index, per the OCI
+   push order); store the child `platform` descriptors verbatim (needed by
+   T-88's platform resolution, and by docker clients selecting an arch on
+   pull). Reject an index whose child digest is missing (`MANIFEST_UNKNOWN`).
 2. Pull: `GET/HEAD /v2/<name>/manifests/<tag|digest>` (set correct
-   Content-Type from the stored media type!), `GET /v2/<name>/blobs/…`
-   (http.ServeContent for ranges), `GET /v2/<name>/tags/list`.
+   Content-Type from the stored media type — an index MUST come back as its
+   index media type so clients then fetch the per-arch child by digest),
+   `GET /v2/<name>/blobs/…` (http.ServeContent for ranges),
+   `GET /v2/<name>/tags/list`. Expose a small helper
+   `ResolveManifest(repo, ref, platform string) (digest, mediaType)` that,
+   given an index, returns the child manifest digest for a platform (used by
+   T-88 to learn a release's supported platforms without a docker client).
 3. Auth middleware: basic auth — node creds (KV `registry/creds/<nodeID>`
    hashes, from T-17) and user PATs (`zpat_…` as password) both accepted.
 4. Ref-counted GC: `DeleteManifest(repo, digest)` decrements layer refs,
-   deletes zero-ref blobs. `gc.go` exposes `UntagAndSweep(repo, tag)` for
-   T-38's retention hook.
+   deletes zero-ref blobs. **For an index, recurse:** deleting the index
+   decrements refs on each child manifest (and a child hitting zero refs
+   cascades to its config+layers) — walk index → child manifests → blobs so a
+   multi-arch tag frees all architectures. `gc.go` exposes
+   `UntagAndSweep(repo, tag)` for T-38's retention hook.
 5. Mount the whole handler on `:5000` TLS (CA server cert) in daemon wiring
    on control nodes.
 **Gotchas:** the SAME blob may be referenced by many manifests/repos —
@@ -1000,10 +1035,15 @@ refcount at the (digest) level with a bbolt bucket, transactionally with
 manifest ops; HEAD responses need Content-Length but no body; docker clients
 send `Accept` lists — match media type or they fall back badly.
 **Tests:** unit — manifest PUT validation, refcount math, GC leaves shared
-layers. Integration — real `docker push` + `docker pull` round-trip of the
-go-hello image against the registry over TLS (add the CA to a dir-scoped
-DOCKER_CONFIG? Simpler: serve the integration registry on 127.0.0.1 with
-plain HTTP behind a flag `RegistryConfig.InsecureHTTP` usable only in tests).
+layers; **index PUT rejects a missing child, index GET returns the index media
+type, `ResolveManifest` picks the right child per platform, GC of a multi-arch
+tag frees every architecture's blobs**. Integration — real `docker
+buildx`/`docker push` + `docker pull` round-trip; push a two-platform
+(`linux/amd64,linux/arm64`) image index of go-hello against the registry over
+TLS and pull it back, asserting both child manifests resolve (add the CA to a
+dir-scoped DOCKER_CONFIG? Simpler: serve the integration registry on 127.0.0.1
+with plain HTTP behind a flag `RegistryConfig.InsecureHTTP` usable only in
+tests).
 **Acceptance:** `go test ./internal/daemon/registry/`;
 `go test -tags integration -run TestRegistryPushPull ./test/integration/`
 
@@ -1023,19 +1063,43 @@ Phase 4 · Depends: T-13, T-32 · Size: L
    `image` with `push=true`, `name=<registry>/<project>/<app>:<build-id>`,
    registry auth via a session `auth.NewDockerAuthProvider` fed from the
    node's registry creds.
-3. Convert `SolveStatus` vertex logs → `BuildEvent{log}` lines; final digest
-   from the exporter response → `BuildEvent{status: SUCCEEDED, image_digest}`.
-4. Agent-local `RunBuild` RPC (T-35 wires the server side; here expose the
+   **Multi-arch:** `req.Platforms` (e.g. `["linux/amd64","linux/arm64"]`)
+   drives the build. Pass the `platform` frontend attr as a comma-joined list
+   so the dockerfile frontend fans out per platform; the `image` exporter then
+   emits an OCI image index (multi-arch manifest list) pushed under the single
+   tag. One platform → a plain manifest (no index); the code path is uniform.
+   Default when `req.Platforms` is empty: the builder node's own `os_arch`
+   only (single-arch, current behavior).
+3. Cross-arch emulation: building `linux/arm64` on an amd64 builder needs QEMU
+   binfmt handlers. On builder nodes, once, ensure the
+   `tonistiigi/binfmt:qemu-*` (pin a digest) install container has run
+   (`--privileged`, writes `/proc/sys/fs/binfmt_misc`) before the first
+   cross-arch solve; expose `EnsureEmulators(ctx, platforms)` that no-ops for
+   the native platform and installs handlers for the rest. Emulated builds are
+   slow but correct; native remote builders are backlog (M4).
+4. Convert `SolveStatus` vertex logs → `BuildEvent{log}` lines; final digest
+   from the exporter response (the INDEX digest when multi-arch) →
+   `BuildEvent{status: SUCCEEDED, image_digest, platforms}`.
+5. Agent-local `RunBuild` RPC (T-35 wires the server side; here expose the
    `Build` func).
 **Gotchas:** buildkitd needs time to boot — health-poll `client.Info` with
 backoff before first build; the registry hostname must be the CONTROL node's
 mesh IP (or 127.0.0.1 single-node) exactly as in the cert SANs; tarball paths
 must be sanitized (no `..` escapes — use `filepath.Clean` + prefix check when
-unpacking); cap build context size (512MB) and build duration (30m ctx).
+unpacking); cap build context size (512MB) and build duration (30m ctx, wider
+when emulating a second arch). Emulation traps: binfmt handlers must be
+registered with the `F` (fix-binary) flag so they survive across the buildkitd
+container boundary; a build for a platform without a working emulator must fail
+loudly (`EnsureEmulators` verifies registration), never silently build the
+wrong arch; the index digest (not a child digest) is what gets deployed.
 **Tests:** unit — tarball unpack sanitization, SolveStatus→log conversion
-with a recorded fixture. Integration — real build of go-hello via buildkitd
-container, image lands in a test registry instance, `docker run` of the
-result serves HTTP.
+with a recorded fixture, platform list → frontend attr encoding,
+`EnsureEmulators` skips the native arch. Integration — real single-arch build
+of go-hello via buildkitd container, image lands in a test registry instance,
+`docker run` of the result serves HTTP; a two-platform build produces an image
+index with both children present in the registry (running the emulated arch is
+not required in CI — assert the index, gate the actual arm64 `docker run`
+behind a `TestDockerfileBuildEmulated` name).
 **Acceptance:** `go test ./internal/daemon/builder/`;
 `go test -tags integration -run TestDockerfileBuild ./test/integration/`
 
@@ -1054,7 +1118,10 @@ Phase 4 · Depends: T-33 · Size: M
 **Gotchas:** nixpacks needs network for its plan (package downloads happen in
 the BuildKit stage, fine); the generated Dockerfile references the build
 context relative to `.nixpacks-out` — pass THAT dir as context; delete the
-out dir between retries.
+out dir between retries. Multi-arch is free here: nixpacks emits an ordinary
+Dockerfile that the T-33 pipeline builds for every requested platform — run
+the nixpacks planner container ONCE (its output is arch-independent), then let
+BuildKit fan out. Do not run the planner per platform.
 **Tests:** unit — ResolveBuildType matrix. Integration — node-hello fixture
 builds via nixpacks → runs.
 **Acceptance:** `go test -tags integration -run TestNixpacksBuild
@@ -1067,29 +1134,45 @@ Phase 4 · Depends: T-33, T-25 · Size: L
 `builds_test.go`
 **Steps:**
 1. `UploadSource` (client-stream): spool tarball to
-   `<data-dir>/uploads/<digest>` on the control node, create Build (QUEUED) +
-   Deployment (PENDING with build_id) — return both.
+   `<data-dir>/uploads/<digest>` on the control node, create Build (QUEUED,
+   with target `platforms`) + Deployment (PENDING with build_id) — return both.
+   **Platform resolution:** `Build.platforms` = `BuildConfig.platforms` if the
+   app declares them (zattera.toml `[build] platforms`), else the DISTINCT set
+   of `os_arch` across schedulable ALIVE workers of the target env's eligible
+   nodes (so a build covers exactly the cluster it will deploy to), else the
+   control node's own arch. Cap the set (≤4) and validate each is a known OCI
+   platform.
 2. Build dispatcher (leader loop, watch KindBuild): QUEUED builds → pick a
    builder node (label `builder=true`, ALIVE; prefer least-busy from
-   livestate) → call its AgentLocalService.RunBuild over the mesh (source_url
+   livestate; a builder must be able to serve every target platform natively
+   OR via emulation — for v1 assume every builder can emulate, so any builder
+   qualifies) → call its AgentLocalService.RunBuild over the mesh
+   (`RunBuildRequest.platforms` carried through; source_url
    = `https://<control>:8443/internal/blobs/<digest>` served by a small
    authenticated handler; node-mTLS-only) → stream BuildEvents: logs →
    logstore under `build/<id>` (T-40 makes this durable; until then keep an
-   in-memory ring on control), status transitions → PutBuild.
+   in-memory ring on control), status transitions → PutBuild (record the built
+   `platforms` on the Build).
 3. Agent side (`buildserver.go`): implement the AgentLocalService server
    skeleton with RunBuild/CancelBuild wired to internal/daemon/builder;
    serve on `:8444` mTLS (this task creates the agent-local server; later
    tasks add methods).
 4. Deployment orchestrator: PENDING with build_id waits in BUILDING until
-   the build SUCCEEDED (then continues with image_ref = built digest ref) or
-   FAILED (deployment FAILED).
+   the build SUCCEEDED (then continues with image_ref = built INDEX digest ref
+   AND copies `Build.platforms` onto the Release it creates/updates — this is
+   what T-88's placement filters on) or FAILED (deployment FAILED).
 5. GitHub-independent retry: build FAILED → stays failed (user redeploys);
    no auto-retry in v1.
-**Gotchas:** the tarball digest dedupes repeat uploads; stream backpressure:
-BuildEvents can be chatty — batch log lines (≤50/frame); a builder dying
-mid-build → dispatcher times out (no event for 60s) and marks FAILED with
-"builder lost"; single-node: control IS the builder (default label
-builder=true on bootstrap).
+**Gotchas:** the tarball digest dedupes repeat uploads — but the CACHE KEY
+must include the target `platforms` (a rebuild for a new arch is a different
+output, don't serve a single-arch build for a two-arch request); stream
+backpressure: BuildEvents can be chatty — batch log lines (≤50/frame); a
+builder dying mid-build → dispatcher times out (no event for 60s) and marks
+FAILED with "builder lost"; single-node: control IS the builder (default label
+builder=true on bootstrap) and `platforms` defaults to its own arch, so the
+single-node path never emulates. `RunBuildRequest` and the success `BuildEvent`
+gain additive `platforms` fields (defined with the AgentLocalService protos in
+this task).
 **Tests:** unit — dispatcher with a fake AgentLocal server: queue→run→
 succeed; builder-lost timeout; deployment gating on build.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestBuilds`
@@ -1155,6 +1238,97 @@ registry sweep runs on control nodes that host blobs (call locally, not over
 the mesh).
 **Tests:** unit — retention keeps active/previous/last-10, sweeps the rest.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestRetention`
+
+### T-87 — Multi-arch protos + reliable node arch reporting
+Phase 4 · Depends: — · Size: S
+**Files:** `api/proto/zattera/v1/deploy.proto` (additive),
+`api/proto/zattera/v1/app.proto` (additive), `api/gen` (regenerate),
+`internal/daemon/api/nodes.go` (boot registration — extend, file owned by
+T-12), `internal/daemon/api/join.go` (join label/arch merge — extend, owned by
+T-17), `internal/appconfig/appconfig.go` (parse `[build] platforms` — extend,
+owned by T-09), `internal/pkgutil/platform/platform.go` (new), tests.
+**Steps:**
+1. Proto (additive only — never renumber): `Release.platforms` =
+   `repeated string platforms = 11;` (OCI platform strings the image runs on;
+   empty = unconstrained/legacy). `Build.platforms = repeated string
+   platforms = 14;`. `BuildConfig.platforms = repeated string platforms = 5;`.
+   `make generate` + commit `api/gen`.
+2. `internal/pkgutil/platform`: tiny helpers — `Local() string` (=
+   `runtime.GOOS + "/" + runtime.GOARCH`), `Normalize(s)` (lowercases,
+   validates `os/arch`, maps common aliases `x86_64→amd64`, `aarch64→arm64`,
+   `arm64/v8→arm64`), `Supports(nodeArch string, platforms []string) bool`
+   (true when `platforms` is empty OR contains the node's arch).
+3. Node boot registration (T-12's `PutNode` at daemon start): set
+   `Node.os_arch = platform.Local()` — the ONE place that must always be
+   right. Verify join (T-17) already merges the joining node's self-reported
+   `os_arch` (it sends its own `platform.Local()` in the join request); if it
+   currently only sets a label, set the field too.
+4. appconfig: parse `[build] platforms = ["linux/amd64","linux/arm64"]` into
+   `BuildConfig.platforms` (normalize each; unknown values = hard error, same
+   style as other appconfig validation); absent = empty (cluster-arch default
+   resolved later at build time, T-35).
+**Gotchas:** `os_arch` was previously best-effort (a label on some paths) —
+this task makes the FIELD authoritative; keep writing the label too for
+backward-compatible constraint matching, but scheduling reads the field
+(T-88). Snapshot round-trip already covers `Node`/`Release`/`BuildConfig`
+(existing fields) — no state-store change needed, only regenerated messages.
+Do NOT change `EnsureImage`/executor: Docker resolves the arch from the
+manifest list at pull time.
+**Tests:** unit — `platform.Normalize`/`Supports` table (aliases, empty =
+any); appconfig golden with a `platforms` list and a bad-value error; node
+boot registration sets `os_arch` (assert via state after daemon start helper).
+**Acceptance:** `make generate && git diff --exit-code api/gen` after commit;
+`go test ./internal/pkgutil/platform/ ./internal/appconfig/`
+
+### T-88 — Arch-aware placement + release platform resolution
+Phase 4 · Depends: T-87, T-24, T-25, T-32 · Size: M
+**Files:** `internal/daemon/scheduler/placement.go` (extend, owned by T-24),
+`internal/daemon/scheduler/scheduler.go` (extend, owned by T-23),
+`internal/daemon/api/deploy.go` (extend, owned by T-25),
+`internal/daemon/scheduler/archplacement_test.go`
+**Steps:**
+1. Placement filter (`placement.go`): add a node filter
+   `platform.Supports(node.os_arch, release.platforms)`. Thread the release's
+   `platforms` into `Place` — either widen the signature to accept
+   `platforms []string` or pass the `*Release`; keep it a pure function.
+   A node whose arch is excluded is filtered exactly like an unschedulable
+   node (never scored, never picked). If NO node satisfies the platform set,
+   emit the same "no node with capacity" style event but with a distinct
+   reason (`"no node with a supported architecture (need one of …)"`).
+2. Scheduler wiring (`scheduler.go`): the evaluation loop resolves each env's
+   active `Release` (it already loads it) and passes `release.platforms` into
+   `Place`; green placement in the orchestrator (T-26) uses the deploying
+   release's platforms. No behavior change when `platforms` is empty.
+3. Release platform resolution at deploy (`deploy.go`, `DeployService.Deploy`):
+   - built images: `Release.platforms` is copied from the Build (T-35 wires
+     this; here just consume the field — for image-ref deploys the Build is
+     absent).
+   - image-ref deploys of an image in the EMBEDDED registry: call the
+     registry's `ResolveManifest`/index reader (T-32) to read the child
+     `platform` descriptors of the manifest/index → set `Release.platforms`.
+   - image-ref deploys of an EXTERNAL image (docker hub, ghcr): best-effort
+     HEAD/GET the manifest with `Accept: <index media types>` via a tiny
+     `internal/daemon/registry/remoteref.go` helper (anonymous or configured
+     creds); an index → collect child platforms; a single manifest → that
+     one platform (read its config's `architecture`/`os`); on ANY error
+     (private/unauthenticated/unreachable) → leave `platforms` empty
+     (unconstrained) and emit a debug event — never fail the deploy over
+     manifest inspection.
+**Gotchas:** empty `platforms` MUST remain "runs anywhere" so every release
+created before this task (and every image we can't inspect) keeps scheduling
+exactly as today — this is the backward-compat contract; the filter is
+additive tightening, never a new hard requirement. Do not inspect external
+registries on the hot path more than once per deploy (resolve at Deploy time,
+freeze into the Release — the scheduler never re-inspects). A stateful service
+pinned to a volume's node whose arch is unsupported by the release is a
+genuine conflict → surface it as a placement event, do not silently strand.
+**Tests:** unit — placement table: amd64-only release skips arm64 nodes and
+vice-versa, mixed-arch release spreads across both, empty platforms = no
+filter (regression), no-supported-arch → event + zero placements; deploy sets
+`Release.platforms` from a fake registry index reader; external-inspect
+failure → empty platforms, deploy still succeeds.
+**Acceptance:** `go test ./internal/daemon/scheduler/ -run 'TestPlacement|TestArchPlacement'`;
+`go test ./internal/daemon/api/ -run TestDeploy`
 
 ---
 
@@ -2315,6 +2489,7 @@ P1: T-01→T-02→T-04→T-05→T-06→T-07/T-08 · T-03 · T-09 · T-10(04-06,0
 P2: T-13 · T-14(02,12)→T-15→T-16 · T-17(01,12)→T-19(18)→T-20 · T-18 · T-21(14) · T-22(17,19)
 P3: T-23(15)→T-26(16,25) · T-24 · T-25(06,09) · T-27 · T-28(25,10) · T-29(23) · T-30(26,29)
 P4: T-31(02)→T-32→T-33(13)→T-34 · T-35(33,25)→T-36(28) · T-37(35) · T-38(32,26)
+    T-87 · T-88(87,24,25,32)   # multi-arch: protos+node arch, arch-aware scheduling
 P5: T-39(26)→T-42→T-43/T-44→T-45 · T-40→T-41(35) · T-46(15)→T-47→T-48 ·
     T-49(35,13) · T-50 · T-51 · T-52 · T-53(23,40) · T-54(ALL)
 P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
