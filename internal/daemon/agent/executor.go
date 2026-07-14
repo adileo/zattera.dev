@@ -289,9 +289,35 @@ func (e *Executor) bringUp(ctx context.Context, a *zatterav1.Assignment, rt *clu
 
 	obs := observe(zatterav1.InstanceState_INSTANCE_STATE_RUNNING, cid, "", e.now())
 	if st, err := e.rt.InspectContainer(ctx, cid); err == nil {
-		obs.MeshPortBindings = portBindings(st.Ports)
+		// Correlate the inspected host ports back to PortSpec names by container
+		// port — Docker's inspect data has no notion of our port names, so the
+		// spec is the only place the name→container_port mapping lives (routing
+		// keys mesh_port_bindings by name).
+		obs.MeshPortBindings = namedPortBindings(st.Ports, rt.GetSpec().GetPorts())
 	}
 	return obs
+}
+
+// namedPortBindings maps each inspected host binding to its PortSpec name via the
+// container port.
+func namedPortBindings(inspected []runtime.PortBinding, ports []*zatterav1.PortSpec) map[string]uint32 {
+	nameByPort := make(map[uint32]string, len(ports))
+	for _, p := range ports {
+		nameByPort[p.GetContainerPort()] = p.GetName()
+	}
+	out := map[string]uint32{}
+	for _, b := range inspected {
+		if b.HostPort == 0 {
+			continue
+		}
+		if name := nameByPort[b.ContainerPort]; name != "" {
+			out[name] = b.HostPort
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // stopAndRemove stops (grace) then force-removes a container we own.
@@ -394,6 +420,7 @@ func (e *Executor) pollLiveness(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	runtimes := e.current().GetRuntime()
 	observed := map[string]*zatterav1.AssignmentObserved{}
 	for id, c := range current {
 		st, err := e.rt.InspectContainer(ctx, c.id)
@@ -403,7 +430,9 @@ func (e *Executor) pollLiveness(ctx context.Context) {
 		switch {
 		case st.Running:
 			obs := observe(zatterav1.InstanceState_INSTANCE_STATE_RUNNING, c.id, "", e.now())
-			obs.MeshPortBindings = portBindings(st.Ports)
+			// Re-report bound host ports (bringUp's inspect can race Docker's
+			// port allocation and see none); keyed by PortSpec name for routing.
+			obs.MeshPortBindings = namedPortBindings(st.Ports, runtimes[id].GetSpec().GetPorts())
 			observed[id] = obs
 		case st.ExitCode != 0:
 			obs := observe(zatterav1.InstanceState_INSTANCE_STATE_FAILED, c.id, fmt.Sprintf("exited with code %d", st.ExitCode), e.now())
@@ -528,22 +557,6 @@ func envList(env map[string]string) []string {
 		out = append(out, k+"="+v)
 	}
 	sort.Strings(out) // deterministic for reproducible container config
-	return out
-}
-
-func portBindings(ports []runtime.PortBinding) map[string]uint32 {
-	if len(ports) == 0 {
-		return nil
-	}
-	out := make(map[string]uint32, len(ports))
-	for _, p := range ports {
-		if p.Name != "" && p.HostPort != 0 {
-			out[p.Name] = p.HostPort
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
 	return out
 }
 

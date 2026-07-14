@@ -54,7 +54,22 @@ func newHarness(t *testing.T) *harness {
 		configPath: filepath.Join(t.TempDir(), "cli-config.toml"),
 	}
 	h.bin = buildBinary(t)
+	cleanupZattera() // clear leftover managed containers/networks from prior runs
 	return h
+}
+
+// cleanupZattera removes managed app containers and their per-env bridge
+// networks left by earlier runs, so a fresh subnet allocation cannot overlap an
+// orphaned network.
+func cleanupZattera() {
+	out, _ := exec.Command("docker", "ps", "-aq", "--filter", "label=dev.zattera/managed=true").Output()
+	if ids := strings.Fields(string(out)); len(ids) > 0 {
+		_ = exec.Command("docker", append([]string{"rm", "-f"}, ids...)...).Run()
+	}
+	nets, _ := exec.Command("docker", "network", "ls", "--filter", "name=zt-", "-q").Output()
+	if ids := strings.Fields(string(nets)); len(ids) > 0 {
+		_ = exec.Command("docker", append([]string{"network", "rm"}, ids...)...).Run()
+	}
 }
 
 // requireDocker skips the test unless a Docker daemon is reachable.

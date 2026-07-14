@@ -338,6 +338,14 @@ func (b *statusBuffer) add(observed map[string]*zatterav1.AssignmentObserved) {
 	}
 	b.mu.Lock()
 	for id, o := range observed {
+		// Coalescing is last-write-wins, but the health manager reports HEALTHY
+		// without port bindings (only the executor's RUNNING carries them). If a
+		// newer status drops the bindings, carry the buffered ones forward so the
+		// bound host ports survive to the store (routing depends on them).
+		if prev, ok := b.m[id]; ok && len(o.GetMeshPortBindings()) == 0 && len(prev.GetMeshPortBindings()) > 0 {
+			o = proto.Clone(o).(*zatterav1.AssignmentObserved)
+			o.MeshPortBindings = prev.GetMeshPortBindings()
+		}
 		b.m[id] = o
 	}
 	b.mu.Unlock()

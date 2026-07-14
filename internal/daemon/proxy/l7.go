@@ -30,6 +30,12 @@ type L7 struct {
 	// Activate is the scale-to-zero hook (T-71). Nil for now.
 	Activate func(envID string)
 
+	// DisableHTTPSRedirect serves plaintext requests directly instead of
+	// 308-redirecting them to HTTPS. Single-node/dev sets this: HTTPS runs on a
+	// non-standard port with a self-signed cert, so a bare https:// redirect
+	// would be broken (T-54).
+	DisableHTTPSRedirect bool
+
 	cidrMu    sync.Mutex
 	cidrVer   uint64
 	cidrCache map[string][]*net.IPNet
@@ -61,7 +67,7 @@ func (p *L7) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// HTTPS redirect on the plaintext listener.
-	if r.TLS == nil && redirectHTTPS(route) {
+	if r.TLS == nil && !p.DisableHTTPSRedirect && redirectHTTPS(route) {
 		target := "https://" + stripPort(r.Host) + r.URL.RequestURI()
 		http.Redirect(w, r, target, http.StatusPermanentRedirect)
 		return
