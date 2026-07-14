@@ -35,22 +35,24 @@ func startDevIngress(ctx context.Context, cfg configForIngress, rb *scheduler.Ro
 	return serveIngress(ctx, cfg, routeBuilderSource{rb: rb}, tm, true, nodeID, clk, log)
 }
 
-// startProdIngress serves the production ingress on :80/:443: routes come from
-// source (the in-process RouteBuilder on control nodes, a RouteClient on
-// workers), certificates from ACME (raft-backed storage + on-demand issuance
-// gated on known route hostnames), and plaintext requests 308-redirect to HTTPS.
-// It also starts the L4 passthrough proxy. (T-89)
-func startProdIngress(ctx context.Context, cfg config.Config, rs *raftstore.Store, source proxy.RouteSource, nodeID string, clk clock.Clock, log *slog.Logger) error {
-	tm, err := tlsmgr.New(tlsmgr.Options{
+// newProdTLSManager builds the single cluster-wide ACME manager shared by the
+// production ingress and (optionally) the public API cert. It issues on demand
+// for the current route hostnames plus extraHosts (e.g. the API hostname). (T-89)
+func newProdTLSManager(rs *raftstore.Store, source proxy.RouteSource, extraHosts []string, acme config.ACMEConfig, clk clock.Clock, log *slog.Logger) (*tlsmgr.Manager, error) {
+	return tlsmgr.New(tlsmgr.Options{
 		Storage: tlsmgr.NewStorage(newRaftCertKV(rs), clk),
-		Hosts:   routeCertHosts{source: source},
-		Email:   cfg.ACME.Email,
-		Staging: cfg.ACME.Staging,
+		Hosts:   certHosts{source: source, extra: extraHosts},
+		Email:   acme.Email,
+		Staging: acme.Staging,
 		Logger:  log,
 	})
-	if err != nil {
-		return err
-	}
+}
+
+// startProdIngress serves the production ingress on :80/:443: routes come from
+// source (the in-process RouteBuilder on control nodes, a RouteClient on
+// workers), certificates from the shared ACME manager, and plaintext requests
+// 308-redirect to HTTPS. It also starts the L4 passthrough proxy. (T-89)
+func startProdIngress(ctx context.Context, cfg config.Config, source proxy.RouteSource, tm *tlsmgr.Manager, nodeID string, clk clock.Clock, log *slog.Logger) error {
 	// L4 passthrough for public_l4_port routes (T-43).
 	l4 := proxy.NewL4(source, nodeID, log)
 	go l4.Run(ctx)
@@ -106,19 +108,28 @@ func serveIngress(ctx context.Context, cfg configForIngress, source proxy.RouteS
 	return nil
 }
 
-// routeCertHosts sources the set of hostnames ACME may issue for from the
-// current route snapshot (tlsmgr.CertHostSource).
-type routeCertHosts struct{ source proxy.RouteSource }
+// certHosts sources the hostnames ACME may issue for: the current route
+// snapshot's hostnames plus any static extras (e.g. the API hostname).
+// (tlsmgr.CertHostSource)
+type certHosts struct {
+	source proxy.RouteSource
+	extra  []string
+}
 
-func (h routeCertHosts) CertHosts() []string {
-	snap := h.source.Current()
+func (h certHosts) CertHosts() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, r := range snap.GetHttpRoutes() {
-		if hn := r.GetHostname(); hn != "" && !seen[hn] {
+	add := func(hn string) {
+		if hn != "" && !seen[hn] {
 			seen[hn] = true
 			out = append(out, hn)
 		}
+	}
+	for _, r := range h.source.Current().GetHttpRoutes() {
+		add(r.GetHostname())
+	}
+	for _, hn := range h.extra {
+		add(hn)
 	}
 	return out
 }

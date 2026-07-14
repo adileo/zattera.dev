@@ -10,8 +10,10 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -43,6 +45,7 @@ import (
 	crt "github.com/zattera-dev/zattera/internal/daemon/runtime"
 	"github.com/zattera-dev/zattera/internal/daemon/scheduler"
 	"github.com/zattera-dev/zattera/internal/daemon/secrets"
+	"github.com/zattera-dev/zattera/internal/daemon/tlsmgr"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 	"github.com/zattera-dev/zattera/internal/pkgutil/version"
@@ -184,11 +187,17 @@ func Run(ctx context.Context, cfg config.Config) error {
 	}
 	// TODO(T-3x): unseal-on-restart so followers/restarts recover the sealer.
 
+	// Cluster CA fingerprint (T-90): operators pin it with `zattera login
+	// --ca-pin` (trust-on-first-use) so no CA file is needed out of band.
+	caFP := caFingerprint(authority)
+	log.Info("cluster CA fingerprint", "sha256", caFP)
+
 	// Dev-mode startup banner (T-52): print effective URLs + first-boot secrets
 	// as a friendly block plus DEVBANNER: machine-readable lines (T-54 parses).
 	if cfg.Dev {
 		info := newDevBannerInfo(cfg)
 		info.AdminToken, info.RecoveryPassphrase = bootToken, bootPassphrase
+		info.CAFingerprint = caFP
 		renderDevBanner(os.Stdout, info)
 	}
 
@@ -240,10 +249,28 @@ func Run(ctx context.Context, cfg config.Config) error {
 	routeBuilder := scheduler.NewRouteBuilder(rs, clk, cfg.Domain, log)
 	go routeBuilder.Run(ctx)
 
+	// Production TLS manager (T-89/T-90): one cluster-wide ACME manager shared by
+	// the ingress and the public API cert. Built only in production (dev uses
+	// self-signed certs). apiHost is the public API hostname eligible for a
+	// public cert (empty unless non-dev + ACME on + a hostname advertise_addr).
+	routeSource := routeBuilderSource{rb: routeBuilder}
+	apiHost := publicAPIHost(cfg)
+	var prodTM *tlsmgr.Manager
+	if !cfg.Dev {
+		var extra []string
+		if apiHost != "" {
+			extra = []string{apiHost}
+		}
+		if tm, terr := newProdTLSManager(rs, routeSource, extra, cfg.ACME, clk, log); terr != nil {
+			log.Warn("tls manager init failed; falling back to CA certs", "err", terr)
+		} else {
+			prodTM = tm
+		}
+	}
+
 	// Ingress: serve HTTP/HTTPS and route to app instances via the live route
 	// snapshot. Dev (T-54) uses self-signed certs on unprivileged ports;
-	// production (T-89) binds :80/:443 with ACME certificates. Both use the
-	// in-process RouteBuilder as the route source on this control node.
+	// production (T-89) binds :80/:443 with ACME certificates.
 	switch {
 	case cfg.Ingress.Disabled:
 		// explicitly off
@@ -253,10 +280,21 @@ func Run(ctx context.Context, cfg config.Config) error {
 		}, routeBuilder, authority, nodeID, clk, log); err != nil {
 			log.Warn("ingress failed to start", "err", err)
 		}
+	case prodTM == nil:
+		log.Warn("production ingress needs a TLS manager; ingress disabled")
 	default:
-		if err := startProdIngress(ctx, cfg, rs, routeBuilderSource{rb: routeBuilder}, nodeID, clk, log); err != nil {
+		if err := startProdIngress(ctx, cfg, routeSource, prodTM, nodeID, clk, log); err != nil {
 			log.Warn("ingress failed to start", "err", err)
 		}
+	}
+
+	// Public API cert (T-90): serve an ACME cert for the API hostname so CLIs
+	// need no cluster CA. Other SNIs keep the CA cert.
+	var apiPubHost string
+	var apiPubCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	if apiHost != "" && prodTM != nil {
+		apiPubHost = apiHost
+		apiPubCert = prodTM.GetTLSConfig().GetCertificate
 	}
 
 	// Agent-local dial (T-54): the control plane reaches every node's
@@ -274,6 +312,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 		AuthService:       api.NewAuthServer(st, rs, clk),
 		ProjectService:    api.NewProjectServer(st, rs, clk, rbac),
 		AppService:        api.NewAppServer(st, rs, clk, sealer),
+		PublicHostname:    apiPubHost,
+		PublicCertificate: apiPubCert,
 		DeployService:     api.NewDeployServer(st, rs, clk, uploadsDir),
 		StateService:      api.NewStateServer(st, rs, clk),
 		NodeService:       api.NewNodeServer(st, rs, clk, authority),
@@ -637,6 +677,36 @@ func agentHostIP(cfg config.Config) string {
 		return ip
 	}
 	return "127.0.0.1"
+}
+
+// caFingerprint is the sha256 (hex) of the cluster CA certificate DER — the
+// value operators pass to `zattera login --ca-pin` (mirrors the join token's
+// CA hash). (T-90)
+func caFingerprint(authority *ca.CA) string {
+	sum := sha256.Sum256(authority.Certificate().Raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// publicAPIHost returns the API's public hostname eligible for a public (ACME)
+// certificate: the host part of api.advertise_addr when production ACME is on
+// and that host is a real DNS name (not empty, not an IP). Otherwise "" —
+// the API keeps its cluster-CA cert. (T-90)
+func publicAPIHost(cfg config.Config) string {
+	if cfg.Dev || cfg.ACME.Disabled {
+		return ""
+	}
+	addr := cfg.API.AdvertiseAddr
+	if addr == "" {
+		return ""
+	}
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	if host == "" || net.ParseIP(host) != nil {
+		return "" // ACME cannot issue for an IP/loopback
+	}
+	return host
 }
 
 // registryClientAddr is the "host:port" that builder + executor containers use

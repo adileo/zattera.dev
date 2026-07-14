@@ -66,9 +66,9 @@ func TestIngressRouteCertHosts(t *testing.T) {
 			{Hostname: ""},              // ignored
 		},
 	}}
-	hosts := routeCertHosts{source: src}.CertHosts()
-	if len(hosts) != 2 {
-		t.Fatalf("hosts = %v, want 2 unique", hosts)
+	hosts := certHosts{source: src, extra: []string{"api.example.com", "a.example.com"}}.CertHosts()
+	if len(hosts) != 3 { // a, b (routes) + api (extra); a dedups
+		t.Fatalf("hosts = %v, want 3 unique", hosts)
 	}
 }
 

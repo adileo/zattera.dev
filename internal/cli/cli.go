@@ -60,6 +60,7 @@ func newLoginCmd() *cobra.Command {
 		token    string
 		name     string
 		caPath   string
+		caPin    string
 		insecure bool
 	)
 	cmd := &cobra.Command{
@@ -78,12 +79,21 @@ bootstrap output of 'zattera server --dev'.`,
 				return err
 			}
 			ctx := cliconfig.Context{Server: server, Token: token, Insecure: insecure}
-			if caPath != "" {
+			switch {
+			case caPath != "":
 				pem, err := os.ReadFile(caPath)
 				if err != nil {
 					return err
 				}
 				ctx.CACertPEM = string(pem)
+			case caPin != "":
+				// Trust-on-first-use: fetch the cluster CA and pin it by fingerprint
+				// (shown at cluster boot / in join tokens), so no CA file is needed.
+				caPEM, err := fetchPinnedCA(server, caPin)
+				if err != nil {
+					return fmt.Errorf("pinning CA: %w", err)
+				}
+				ctx.CACertPEM = caPEM
 			}
 
 			// Verify the token BEFORE persisting anything, so a bad login never
@@ -119,6 +129,7 @@ bootstrap output of 'zattera server --dev'.`,
 	cmd.Flags().StringVar(&token, "token", "", "API token")
 	cmd.Flags().StringVar(&name, "context", "default", "context name")
 	cmd.Flags().StringVar(&caPath, "ca-cert", "", "path to the cluster CA certificate (self-signed/dev clusters)")
+	cmd.Flags().StringVar(&caPin, "ca-pin", "", "cluster CA sha256 fingerprint; fetches+pins the CA (trust-on-first-use)")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification (dev only)")
 	return cmd
 }

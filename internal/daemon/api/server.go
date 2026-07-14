@@ -71,6 +71,13 @@ type Options struct {
 	// /v1/github/webhook (signature-authenticated, not part of the gRPC policy).
 	GitHubWebhook http.Handler
 
+	// PublicHostname + PublicCertificate serve a publicly-trusted (ACME) cert
+	// for the API's public hostname so CLIs need no cluster CA (T-90). All other
+	// SNIs (loopback, mesh IP, node identities) keep the CA server cert. When
+	// PublicCertificate is nil the CA cert is always used.
+	PublicHostname    string
+	PublicCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+
 	// SourceBlobHandler, if set, serves build source tarballs by digest under
 	// /internal/blobs/ to builder nodes (mTLS-gated, T-54).
 	SourceBlobHandler http.Handler
@@ -154,6 +161,20 @@ func New(opts Options) (*Server, error) {
 		return nil, err
 	}
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"}
+
+	// Serve a publicly-trusted cert for the public API hostname (ACME, T-90);
+	// every other SNI keeps the CA server cert (loopback gateway, mesh IPs,
+	// node mTLS all rely on it).
+	if opts.PublicCertificate != nil && opts.PublicHostname != "" {
+		caLeaf := tlsCfg.Certificates[0]
+		tlsCfg.Certificates = nil
+		tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.ServerName == opts.PublicHostname {
+				return opts.PublicCertificate(hello)
+			}
+			return &caLeaf, nil
+		}
+	}
 
 	s := &Server{opts: opts, log: log, grpc: grpcSrv, health: hs, lis: lis, endpoint: endpoint}
 	s.http = &http.Server{

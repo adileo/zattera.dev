@@ -57,6 +57,7 @@ type devBannerInfo struct {
 	IngressHTTPS     string
 	RegistryEndpoint string
 	CACertPath       string
+	CAFingerprint    string // sha256 of the CA cert; usable as `login --ca-pin`
 	DataDir          string
 	// AdminToken / RecoveryPassphrase are set only on first boot.
 	AdminToken         string
@@ -106,6 +107,9 @@ func renderDevBanner(w io.Writer, info devBannerInfo) {
 	fmt.Fprintf(w, "              %s  (https)\n", info.IngressHTTPS)
 	fmt.Fprintf(w, "  Registry:   %s\n", info.RegistryEndpoint)
 	fmt.Fprintf(w, "  CA cert:    %s\n", info.CACertPath)
+	if info.CAFingerprint != "" {
+		fmt.Fprintf(w, "  CA pin:     %s\n", info.CAFingerprint)
+	}
 	fmt.Fprintf(w, "  Data dir:   %s\n", info.DataDir)
 	if info.AdminToken != "" {
 		fmt.Fprintln(w, "")
@@ -123,6 +127,9 @@ func renderDevBanner(w io.Writer, info devBannerInfo) {
 	fmt.Fprintf(w, "%singress_https=%s\n", devBannerPrefix, info.IngressHTTPS)
 	fmt.Fprintf(w, "%sregistry=%s\n", devBannerPrefix, info.RegistryEndpoint)
 	fmt.Fprintf(w, "%sca=%s\n", devBannerPrefix, info.CACertPath)
+	if info.CAFingerprint != "" {
+		fmt.Fprintf(w, "%sca_fingerprint=%s\n", devBannerPrefix, info.CAFingerprint)
+	}
 	fmt.Fprintf(w, "%sdata_dir=%s\n", devBannerPrefix, info.DataDir)
 	if info.AdminToken != "" {
 		fmt.Fprintf(w, "%stoken=%s\n", devBannerPrefix, info.AdminToken)
