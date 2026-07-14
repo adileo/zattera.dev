@@ -38,6 +38,7 @@ func Commands() []*cobra.Command {
 		newRollbackCmd(),
 		newStateCmd(),
 		newNodesCmd(),
+		newGitHubCmd(),
 	}
 	for _, c := range cmds {
 		c.PersistentFlags().BoolVar(&jsonFlag, "json", false, "machine-readable output")

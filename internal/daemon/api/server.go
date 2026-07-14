@@ -60,6 +60,10 @@ type Options struct {
 	// MeshService distributes WireGuard peer sets (mTLS node identity).
 	MeshService clusterv1.MeshServiceServer
 
+	// GitHubWebhook, if set, is mounted as a raw HTTP handler at
+	// /v1/github/webhook (signature-authenticated, not part of the gRPC policy).
+	GitHubWebhook http.Handler
+
 	// Interceptors run in the given order (auth → rbac → audit → leader-forward
 	// per later tasks). Health checks bypass them via a method skip inside each.
 	UnaryInterceptors  []grpc.UnaryServerInterceptor
@@ -153,6 +157,12 @@ func (s *Server) routeHandler(grpcSrv *grpc.Server, gw http.Handler) http.Handle
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
 			grpcSrv.ServeHTTP(w, r)
+			return
+		}
+		// GitHub push-to-deploy webhook (T-37): a raw HTTP route, authenticated
+		// by its HMAC signature rather than the gRPC auth chain.
+		if s.opts.GitHubWebhook != nil && r.URL.Path == "/v1/github/webhook" {
+			s.opts.GitHubWebhook.ServeHTTP(w, r)
 			return
 		}
 		gw.ServeHTTP(w, r)
