@@ -132,6 +132,16 @@ func (o *Orchestrator) reconcile(ctx context.Context, d *zatterav1.Deployment) e
 
 	// A newer non-terminal deployment for this env takes over.
 	if o.superseded(st, d) {
+		// If we already promoted (DRAINING_OLD), traffic has switched and this
+		// deploy succeeded; leave every instance in place and just complete.
+		// Reaping our green would kill the serving release, and stopping our
+		// blue would yank the warm rollback target out from under the newer
+		// deployment (e.g. a rollback promoting exactly that release). The
+		// scheduler reaps any genuinely stale-release instances once no
+		// deployment owns the env.
+		if d.GetPhase() == zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_DRAINING_OLD {
+			return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_SUCCEEDED, "")
+		}
 		if err := o.reapGreen(ctx, st, d); err != nil {
 			return err
 		}
@@ -289,6 +299,14 @@ func (o *Orchestrator) drain(ctx context.Context, st *state.Store, d *zatterav1.
 	if dl := d.GetDrainDeadline(); dl != nil && o.clock.Now().Before(dl.AsTime()) {
 		return nil // keep blue warm for rollback
 	}
+	return o.completeDrain(ctx, st, d)
+}
+
+// completeDrain stops this deployment's outgoing blue set and marks it
+// SUCCEEDED. It never touches the green set (the promoted, live release), so it
+// is safe to call both when the drain window elapses and when a newer
+// deployment takes over an already-promoted one.
+func (o *Orchestrator) completeDrain(ctx context.Context, st *state.Store, d *zatterav1.Deployment) error {
 	blue := blueAssignments(st, d)
 	var puts []*zatterav1.Assignment
 	for _, a := range blue {

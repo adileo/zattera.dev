@@ -112,6 +112,28 @@ func TestSetAssignmentObservedGuards(t *testing.T) {
 	if a.GetObserved().GetState() != zatterav1.InstanceState_INSTANCE_STATE_HEALTHY {
 		t.Fatal("observed update not applied")
 	}
+
+	// A liveness RUNNING report must not downgrade a HEALTHY instance (the
+	// router serves only HEALTHY endpoints), but must still refresh ports.
+	s.SetAssignmentObserved("n1", map[string]*zatterav1.AssignmentObserved{
+		"a1": {State: zatterav1.InstanceState_INSTANCE_STATE_RUNNING, MeshPortBindings: map[string]uint32{"http": 8080}},
+	})
+	a, _ = s.Assignment("a1")
+	if a.GetObserved().GetState() != zatterav1.InstanceState_INSTANCE_STATE_HEALTHY {
+		t.Fatalf("RUNNING liveness report downgraded HEALTHY to %v", a.GetObserved().GetState())
+	}
+	if a.GetMeshPortBindings()["http"] != 8080 {
+		t.Fatal("port binding from liveness report not applied")
+	}
+
+	// A genuine crash (FAILED/STOPPED) still overrides HEALTHY.
+	s.SetAssignmentObserved("n1", map[string]*zatterav1.AssignmentObserved{
+		"a1": {State: zatterav1.InstanceState_INSTANCE_STATE_FAILED},
+	})
+	a, _ = s.Assignment("a1")
+	if a.GetObserved().GetState() != zatterav1.InstanceState_INSTANCE_STATE_FAILED {
+		t.Fatal("crash report should override HEALTHY")
+	}
 }
 
 func TestKVCAS(t *testing.T) {

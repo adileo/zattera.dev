@@ -138,6 +138,49 @@ func TestDeployment(t *testing.T) {
 		}
 	})
 
+	t.Run("a newer deployment never reaps an already-promoted one's live green", func(t *testing.T) {
+		o, rs, clk := newDeployRig(t)
+		st := rs.State()
+
+		// Walk dep1 to DRAINING_OLD: its green (rel2) is now the live release.
+		step(t, o, depID) // → PLACING
+		step(t, o, depID) // → STARTING (green placed)
+		setGreen(st, zatterav1.InstanceState_INSTANCE_STATE_HEALTHY)
+		step(t, o, depID) // → HEALTHCHECKING
+		step(t, o, depID) // → PROMOTING
+		step(t, o, depID) // → DRAINING_OLD (traffic switched)
+		phaseIs(t, st, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_DRAINING_OLD)
+		liveGreen := len(greenOf(st))
+		if liveGreen == 0 {
+			t.Fatal("expected a live green set after promotion")
+		}
+
+		// A newer deploy arrives while dep1 is still draining (well within the
+		// drain window).
+		clk.Advance(time.Minute)
+		st.PutDeployment(&zatterav1.Deployment{
+			Meta:          &zatterav1.Meta{Id: "dep2", CreatedAt: pbTime(clk)},
+			EnvironmentId: dEnvID, AppId: "a1", ProjectId: "p1",
+			ReleaseId:         greenRel,
+			PreviousReleaseId: greenRel,
+			Phase:             zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PENDING,
+		})
+
+		step(t, o, depID) // dep1: superseded while DRAINING_OLD → complete, touch nothing
+		got, _ := st.Deployment(depID)
+		if got.GetPhase() != zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_SUCCEEDED {
+			t.Fatalf("promoted+superseded deployment should complete, got %v", got.GetPhase())
+		}
+		if n := len(greenOf(st)); n != liveGreen {
+			t.Fatalf("live green must survive supersession, had %d now %d", liveGreen, n)
+		}
+		// Blue must stay warm too: a rollback taking over may promote exactly
+		// that release, so supersession must not stop it.
+		if n := runningBlue(st); n != 2 {
+			t.Fatalf("blue must stay warm through supersession, got %d still RUN", n)
+		}
+	})
+
 	t.Run("stateful releases are rejected", func(t *testing.T) {
 		o, rs, _ := newDeployRig(t)
 		st := rs.State()

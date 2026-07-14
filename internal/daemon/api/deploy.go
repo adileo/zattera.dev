@@ -163,14 +163,25 @@ func (s *DeployServer) resolveEnv(envID string) (*zatterav1.Environment, error) 
 	return env, nil
 }
 
-// hasActiveDeployment reports whether a non-terminal deployment exists for env.
+// hasActiveDeployment reports whether a deployment that must finish before a new
+// one can start exists for env. A deployment that has already promoted
+// (DRAINING_OLD) does not count: traffic has switched to its release and the
+// orchestrator drains the old one as the next deployment rolls out — matching
+// the CLI, which reports success at DRAINING_OLD. Without this a successful
+// deploy would block the next one for the whole (10m) drain window.
 func (s *DeployServer) hasActiveDeployment(envID string) bool {
 	for _, d := range s.store.ListDeployments(envID) {
-		if !deploymentTerminal(d.GetPhase()) {
+		if deploymentBlocksNewDeploy(d.GetPhase()) {
 			return true
 		}
 	}
 	return false
+}
+
+// deploymentBlocksNewDeploy reports whether a deployment is still in a
+// pre-promotion phase and must complete before another deploy may begin.
+func deploymentBlocksNewDeploy(p zatterav1.DeploymentPhase) bool {
+	return !deploymentTerminal(p) && p != zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_DRAINING_OLD
 }
 
 // resolveImage returns the image ref to deploy from the request.

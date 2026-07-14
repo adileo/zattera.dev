@@ -124,7 +124,19 @@ func (s *Store) SetAssignmentObserved(nodeID string, observed map[string]*zatter
 		if !ok || a.GetNodeId() != nodeID {
 			continue
 		}
-		a.Observed = clone(obs)
+		next := clone(obs)
+		// A coarse liveness RUNNING report must not downgrade the finer
+		// HEALTHY/UNHEALTHY state the health monitor owns: the monitor only
+		// re-emits on transition, so the downgrade would stick and the router
+		// (which serves only HEALTHY endpoints) would drop a live instance.
+		// Crashes still surface as FAILED/STOPPED, which are not RUNNING.
+		if next.GetState() == zatterav1.InstanceState_INSTANCE_STATE_RUNNING {
+			if cur := a.GetObserved().GetState(); cur == zatterav1.InstanceState_INSTANCE_STATE_HEALTHY ||
+				cur == zatterav1.InstanceState_INSTANCE_STATE_UNHEALTHY {
+				next.State = cur
+			}
+		}
+		a.Observed = next
 		// The agent reports the host ports it actually bound; promote them into
 		// the assignment so routing/proxy read them from the desired object
 		// (T-15). Empty maps (e.g. a stop transition) don't clobber prior ports.
