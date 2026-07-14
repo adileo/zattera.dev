@@ -22,35 +22,38 @@ Turn any pool of machines — bare metal, VPS, multi-cloud, the server under you
 
 ```bash
 # 1. on your first server — start the cluster
+#    asks for a domain (eg: mycluster.example.com), prints your login + join commands
 curl -fsSL https://get.zattera.dev | sh
-sudo zattera cluster init          # asks for a domain, prints your login + join commands
+sudo zattera cluster init
 
 # 2. on every other machine, anywhere in the world — join it
-#    (previous command prints this line for you, address + token filled in)
+#    (previous command prints this line for you)
 curl -fsSL https://get.zattera.dev | sh && sudo zattera cluster join <control-ip>:8443 --token <JOIN_TOKEN>
 
-# 3. from your laptop — log in
+# 3. from your laptop — log in from the CLI to manage the cluster
 zt login --server https://<control-ip>:8443 --ca-pin <FINGERPRINT> --token <ADMIN_TOKEN> --context prod
 
-# 4. Enter the directory of your app and run
+# 4. Enter the directory of your app (any nixpacks / Dockerfile app) and run
 zt deploy --prod
 ```
 
 ```
 ✓ Built api (nixpacks, 34s)
 ✓ Released v42 → production (red/green, 2 replicas healthy)
-● https://api.example.com
+● https://api.yourcustomdomain.com
+  https://api-prod.mycluster.example.com
 ```
 
 ## Why Zattera
 
-Every alternative makes you choose: a web panel bolted on Docker with no real orchestration (Coolify, Dokploy), a bare CLI that leaves scheduling and state to you (Kamal), or the full cloud experience _if_ you operate Kubernetes first (Kubero, Cozystack). Zattera takes the untaken quadrant: **multi-server orchestration with zero platform dependencies.**
+Every alternative makes you choose: a web panel bolted on Docker with no real scalable orchestration (Coolify, Dokploy), a bare CLI that leaves scheduling and state to you (Kamal), or the full cloud experience _if_ you operate Kubernetes first (Kubero, Cozystack). Zattera takes the untaken quadrant: **multi-server orchestration with zero platform dependencies.**
 
 - **No Kubernetes.** No etcd, no CNI/CSI/Ingress zoo, no YAML sprawl. (Setting up the infrastracture should't require you 5 kubernetes dev-ops)
-- **No external database.** State lives in embedded Raft — the platform that runs your Postgres doesn't die when _its_ Postgres dies. It doesn't depend on one.
+- **No Docker Swarm.**
+- **No external database.** State lives in embedded Raft and replicated across nodes
 - **No web-stack panel on your servers.** Workers run an agent measured in tens of MB, not a 2GB bloated dashboard.
-- **No bundled nginx/Traefik/certbot.** Proxy and HTTPS automatic certificates live in-process. No config generation, no version skew, no "cert renewed but proxy didn't reload".
-- **No vendor anything.** Builds, images, logs, metrics — all on your metal. Works air-gapped.
+- **No bundled nginx/Traefik/certbot.** Traffic proxy, load balancing and HTTPS/Let's encrypt certificates live in-process. No config generation, no version skew, no "cert renewed but proxy didn't reload".
+- **No vendor anything.** Builds, images, logs, metrics — all on your metal. Works air-gapped. No vendor lock-in.
 
 ## Features
 
@@ -67,15 +70,7 @@ Every alternative makes you choose: a web panel bolted on Docker with no real or
 
 ## What Zattera does
 
-> **Status note:** Pre-alpha. Zattera.dev is an ambitious PoC/experiment, the base structure is entirely "vibe-coded" even if architectural choices and most of the tests are taken seriously by the mantainer. We are looking for alpha testers.
-
-### Platform model
-
-- **Single Go binary** — CLI, control plane, worker agent, proxy, and registry in one binary
-- **Docker only** — no Postgres, Redis, etcd, nginx, or certbot on hosts
-- **Embedded Raft state** — no external control-plane database
-- **One-line install & join** — workers join with `--join` + token
-- **Single node → cluster** — fully functional on one machine; grow with `--join`, drain/remove nodes
+> **Status note:** Pre-alpha. Zattera.dev is an ambitious PoC/experiment, the base structure is entirely "vibe-coded" even if architectural choices and most of the tests are taken manually by the mantainer. We are looking for early adopters/alpha testers.
 
 ### Deploy & build
 
@@ -136,8 +131,6 @@ Every alternative makes you choose: a web panel bolted on Docker with no real or
 
 ## What Zattera deliberately doesn't do
 
-Zattera's edge is not a longer feature list — it's focus on the deploy-and-run path and refusing what makes alternatives heavy or fragile.
-
 | Doesn't do                      | Who typically does         | Why Zattera skips it                            |
 | ------------------------------- | -------------------------- | ----------------------------------------------- |
 | Run Kubernetes                  | Kubero, Cozystack, Devtron | No etcd/CNI/CSI/Ingress zoo, no YAML sprawl     |
@@ -187,7 +180,7 @@ Zattera's edge is not a longer feature list — it's focus on the deploy-and-run
    (Hetzner, eu)               (home server, NAT)
 ```
 
-Desired state is declared, replicated via Raft, and continuously reconciled. Kill a node: stateless replicas reschedule in seconds. Export the whole platform as YAML with `zattera state export`. Read the full [specification](./paas-specification.md).
+Desired state is declared, replicated via Raft, and continuously reconciled. Kill a node: stateless replicas reschedule in seconds. Export the whole platform as YAML with `zattera state export`.
 
 ## Non-goals
 
