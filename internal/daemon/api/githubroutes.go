@@ -170,6 +170,7 @@ func (g *githubWebhook) DeployGit(ctx context.Context, app *github.App, envName,
 		Type:          appObj.GetBuild().GetType(),
 		Status:        zatterav1.BuildStatus_BUILD_STATUS_QUEUED,
 		GitSha:        sha,
+		Platforms:     appObj.GetBuild().GetPlatforms(),
 	}
 	spec := proto.Clone(env.GetService()).(*zatterav1.ServiceSpec)
 	rel := &zatterav1.Release{

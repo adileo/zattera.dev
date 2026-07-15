@@ -16,7 +16,7 @@ func TestPlacement(t *testing.T) {
 		st.PutNode(pnode("n2", "us", 1000, 1024))
 		spec := &zatterav1.ServiceSpec{PlacementConstraints: map[string]string{"region": "eu"}}
 
-		got, err := Place(st, spec, "env1", 1, nil)
+		got, err := Place(st, specRel(spec), "env1", 1, nil)
 		if err != nil {
 			t.Fatalf("place: %v", err)
 		}
@@ -35,7 +35,7 @@ func TestPlacement(t *testing.T) {
 		st.PutNode(cordoned)
 		st.PutNode(pnode("n3", "", 1000, 1024))
 
-		got, err := Place(st, &zatterav1.ServiceSpec{}, "env1", 1, nil)
+		got, err := Place(st, specRel(&zatterav1.ServiceSpec{}), "env1", 1, nil)
 		if err != nil || !reflect.DeepEqual(got, []string{"n3"}) {
 			t.Fatalf("only n3 is schedulable, got %v err=%v", got, err)
 		}
@@ -45,7 +45,7 @@ func TestPlacement(t *testing.T) {
 		st := state.New()
 		st.PutNode(pnode("n1", "", 1000, 1024))
 		st.PutNode(pnode("n2", "", 1000, 1024))
-		got, _ := Place(st, &zatterav1.ServiceSpec{}, "env1", 1, map[string]bool{"n1": true})
+		got, _ := Place(st, specRel(&zatterav1.ServiceSpec{}), "env1", 1, map[string]bool{"n1": true})
 		if !reflect.DeepEqual(got, []string{"n2"}) {
 			t.Fatalf("excluded n1 should not be picked, got %v", got)
 		}
@@ -57,7 +57,7 @@ func TestPlacement(t *testing.T) {
 		st.PutNode(pnode("n2", "", 1000, 4096))
 		st.PutNode(pnode("n3", "", 1000, 4096))
 
-		got, err := Place(st, &zatterav1.ServiceSpec{}, "env1", 3, nil)
+		got, err := Place(st, specRel(&zatterav1.ServiceSpec{}), "env1", 3, nil)
 		if err != nil {
 			t.Fatalf("place: %v", err)
 		}
@@ -73,7 +73,7 @@ func TestPlacement(t *testing.T) {
 		st.PutNode(pnode("n1", "", 1000, 512)) // fits two 256MB replicas
 		spec := &zatterav1.ServiceSpec{Resources: &zatterav1.ResourceLimits{MemoryMb: 256}}
 
-		got, err := Place(st, spec, "env1", 3, nil)
+		got, err := Place(st, specRel(spec), "env1", 3, nil)
 		if err == nil {
 			t.Fatal("expected a capacity error")
 		}
@@ -96,7 +96,7 @@ func TestPlacement(t *testing.T) {
 		})
 		spec := &zatterav1.ServiceSpec{Resources: &zatterav1.ResourceLimits{MemoryMb: 256}}
 
-		got, err := Place(st, spec, "env1", 2, nil)
+		got, err := Place(st, specRel(spec), "env1", 2, nil)
 		if err == nil || len(got) != 1 {
 			t.Fatalf("only one more 256MB replica fits beside the reserved one, got %v err=%v", got, err)
 		}
@@ -117,7 +117,7 @@ func TestPlacement(t *testing.T) {
 			Volumes:  []*zatterav1.VolumeMount{{VolumeName: "data", MountPath: "/data"}},
 		}
 
-		got, err := Place(st, spec, "env1", 1, nil)
+		got, err := Place(st, specRel(spec), "env1", 1, nil)
 		if err != nil || !reflect.DeepEqual(got, []string{"n2"}) {
 			t.Fatalf("stateful replica must pin to the volume node n2, got %v err=%v", got, err)
 		}
@@ -128,8 +128,8 @@ func TestPlacement(t *testing.T) {
 		st.PutNode(pnode("n3", "", 1000, 4096))
 		st.PutNode(pnode("n1", "", 1000, 4096))
 		st.PutNode(pnode("n2", "", 1000, 4096))
-		a, _ := Place(st, &zatterav1.ServiceSpec{}, "env1", 2, nil)
-		b, _ := Place(st, &zatterav1.ServiceSpec{}, "env1", 2, nil)
+		a, _ := Place(st, specRel(&zatterav1.ServiceSpec{}), "env1", 2, nil)
+		b, _ := Place(st, specRel(&zatterav1.ServiceSpec{}), "env1", 2, nil)
 		if !reflect.DeepEqual(a, b) {
 			t.Fatalf("placement must be deterministic: %v vs %v", a, b)
 		}
@@ -137,6 +137,11 @@ func TestPlacement(t *testing.T) {
 			t.Fatalf("expected id-ordered spread [n1 n2], got %v", a)
 		}
 	})
+}
+
+// specRel wraps a bare spec in a release, as Place consumes releases (T-88).
+func specRel(spec *zatterav1.ServiceSpec) *zatterav1.Release {
+	return &zatterav1.Release{Service: spec}
 }
 
 func pnode(id, region string, cpu, mem uint32) *zatterav1.Node {

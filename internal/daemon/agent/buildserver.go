@@ -88,6 +88,7 @@ func (s *BuildServer) RunBuild(req *clusterv1.RunBuildRequest, stream grpc.Serve
 		Registry:         registryHost(req.GetPushImageRef()),
 		ImageRef:         req.GetPushImageRef(),
 		BuildArgs:        req.GetBuildArgs(),
+		Platforms:        b.GetPlatforms(),
 		Auth:             s.regAuth,
 		RegistryInsecure: s.insecure,
 		LoadLocally:      s.loadLocal,
@@ -135,7 +136,7 @@ func (s *BuildServer) untrack(id string) {
 func toProtoEvent(ev builder.BuildEvent) *clusterv1.BuildEvent {
 	if ev.Done {
 		if ev.Success {
-			return &clusterv1.BuildEvent{Status: zatterav1.BuildStatus_BUILD_STATUS_SUCCEEDED, ImageDigest: ev.ImageDigest}
+			return &clusterv1.BuildEvent{Status: zatterav1.BuildStatus_BUILD_STATUS_SUCCEEDED, ImageDigest: ev.ImageDigest, Platforms: ev.Platforms}
 		}
 		return failEvent(ev.Err)
 	}

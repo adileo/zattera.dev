@@ -18,6 +18,12 @@ import (
 	"github.com/zattera-dev/zattera/internal/state"
 )
 
+// PlatformResolver reports the OCI platforms an image reference can run on
+// (empty = unknown/unconstrained). Implementations must be best-effort: they
+// log their own failures and return nil rather than an error a deploy would
+// trip over.
+type PlatformResolver func(ctx context.Context, imageRef string) []string
+
 // DeployServer implements DeployService: it turns image refs (or completed
 // builds) into Releases + red/green Deployments. The orchestrator (T-26) drives
 // the deployment through its phases; this service only creates work.
@@ -27,6 +33,11 @@ type DeployServer struct {
 	raft       Applier
 	clock      clock.Clock
 	uploadsDir string // where UploadSource spools source tarballs
+
+	// Platforms resolves an image ref's supported platforms at deploy time
+	// (T-88). Optional: nil leaves releases unconstrained. Set by the daemon
+	// once the embedded registry is up.
+	Platforms PlatformResolver
 }
 
 // NewDeployServer builds the deploy service. uploadsDir is where UploadSource
@@ -52,6 +63,7 @@ func (s *DeployServer) Deploy(ctx context.Context, req *zatterav1.DeployRequest)
 	}
 
 	rel := s.buildRelease(env, imageRef)
+	rel.Platforms = s.resolvePlatforms(ctx, req, imageRef)
 	dep := s.buildDeployment(env, rel.GetMeta().GetId(), false)
 
 	if err := s.commit(ctx, rel, dep); err != nil {
@@ -200,6 +212,23 @@ func (s *DeployServer) resolveImage(req *zatterav1.DeployRequest) (string, error
 		return b.GetImageRef(), nil
 	}
 	return "", status.Error(codes.InvalidArgument, "either image_ref or build_id is required")
+}
+
+// resolvePlatforms determines a new release's supported platforms (T-88),
+// frozen into the Release at deploy time — the scheduler never re-inspects.
+// Deploys from a completed build trust what the builder produced; image-ref
+// deploys ask the resolver (embedded registry index read, best-effort remote
+// manifest inspect). Empty = unconstrained — inspection failures never fail a
+// deploy.
+func (s *DeployServer) resolvePlatforms(ctx context.Context, req *zatterav1.DeployRequest, imageRef string) []string {
+	if bid := req.GetBuildId(); bid != "" {
+		b, _ := s.store.Build(bid)
+		return b.GetPlatforms()
+	}
+	if s.Platforms == nil {
+		return nil
+	}
+	return s.Platforms(ctx, imageRef)
 }
 
 // buildRelease freezes the environment's current spec into a new release.

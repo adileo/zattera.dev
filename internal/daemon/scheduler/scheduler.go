@@ -197,7 +197,7 @@ func (s *Scheduler) evaluateEnv(ctx context.Context, st *state.Store, env *zatte
 	// Scale up: place the shortfall (T-24 placement). Spread is handled by the
 	// scorer; no exclusions (a replacement may co-locate when nodes are scarce).
 	if missing := desired - len(good); missing > 0 && rel != nil {
-		nodes, err := Place(st, rel.GetService(), envID, missing, nil)
+		nodes, err := Place(st, rel, envID, missing, nil)
 		for _, nodeID := range nodes {
 			puts = append(puts, newAssignment(env, rel, nodeID))
 		}

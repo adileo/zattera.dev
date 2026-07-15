@@ -193,10 +193,12 @@ func TestBuildsDeploymentGating(t *testing.T) {
 		t.Fatalf("phase = %v, want still BUILDING", dep.GetPhase())
 	}
 
-	// Build succeeds → BUILDING stamps the image and advances to PLACING.
+	// Build succeeds → BUILDING stamps the image + platforms and advances to
+	// PLACING.
 	b, _ := st.Build("b1")
 	b.Status = zatterav1.BuildStatus_BUILD_STATUS_SUCCEEDED
 	b.ImageRef = "ctrl:5000/proj1/app1@sha256:abc123"
+	b.Platforms = []string{"linux/arm64"}
 	st.PutBuild(b)
 	if err := o.reconcile(ctx, dep); err != nil {
 		t.Fatal(err)
@@ -208,6 +210,9 @@ func TestBuildsDeploymentGating(t *testing.T) {
 	rel, _ := st.Release(relID)
 	if rel.GetImageRef() != "ctrl:5000/proj1/app1@sha256:abc123" {
 		t.Fatalf("release image not stamped: %q", rel.GetImageRef())
+	}
+	if p := rel.GetPlatforms(); len(p) != 1 || p[0] != "linux/arm64" {
+		t.Fatalf("release platforms not copied from the build: %v", p)
 	}
 }
 

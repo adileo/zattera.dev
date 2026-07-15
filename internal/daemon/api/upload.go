@@ -97,6 +97,7 @@ func (s *DeployServer) UploadSource(stream grpc.ClientStreamingServer[zatterav1.
 		}
 	}
 
+	app, _ := s.store.App(env.GetAppId())
 	build := &zatterav1.Build{
 		Meta:          newMeta(ids.New(), s.clock.Now()),
 		AppId:         env.GetAppId(),
@@ -106,6 +107,7 @@ func (s *DeployServer) UploadSource(stream grpc.ClientStreamingServer[zatterav1.
 		Status:        zatterav1.BuildStatus_BUILD_STATUS_QUEUED,
 		TarballDigest: digest,
 		GitSha:        hdr.GetGitSha(),
+		Platforms:     app.GetBuild().GetPlatforms(),
 	}
 	rel := s.buildRelease(env, "") // image_ref filled in once the build succeeds
 	dep := s.buildDeployment(env, rel.GetMeta().GetId(), false)

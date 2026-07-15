@@ -3,8 +3,10 @@ package scheduler
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
+	"github.com/zattera-dev/zattera/internal/pkgutil/platform"
 	"github.com/zattera-dev/zattera/internal/state"
 )
 
@@ -25,7 +27,8 @@ func (r resources) add(o resources) resources {
 	return resources{cpuMillis: r.cpuMillis + o.cpuMillis, memoryMB: r.memoryMB + o.memoryMB}
 }
 
-// Place selects up to n nodes to run replicas of spec for environment envID.
+// Place selects up to n nodes to run replicas of rel (its frozen ServiceSpec)
+// for environment envID.
 //
 // It is a PURE function over state (no I/O), so it is fully table-testable.
 // Capacity is judged by RESERVATIONS (sum of RUN assignments' declared
@@ -33,22 +36,32 @@ func (r resources) add(o resources) resources {
 // orchestrator uses it to place a green set beside blue and to avoid retrying a
 // candidate that already failed. Returns fewer than n plus an error when
 // filters/capacity cannot satisfy the request.
-func Place(st *state.Store, spec *zatterav1.ServiceSpec, envID string, n int, exclude map[string]bool) ([]string, error) {
+func Place(st *state.Store, rel *zatterav1.Release, envID string, n int, exclude map[string]bool) ([]string, error) {
 	if n <= 0 {
 		return nil, nil
 	}
+	spec := rel.GetService()
+	platforms := rel.GetPlatforms()
 	need := effectiveResources(spec)
 	pinned := pinnedNodeID(st, spec, envID)
 	reserved := reservationsByNode(st)
 
-	// Filter candidates.
+	// Filter candidates. An arch-excluded node is filtered exactly like an
+	// unschedulable one: never scored, never picked. Empty platforms = runs
+	// anywhere (legacy releases, uninspectable images) — the filter is additive
+	// tightening, never a new hard requirement.
 	var cands []*zatterav1.Node
+	archRejected := false
 	for _, node := range st.ListNodes() {
 		id := node.GetMeta().GetId()
 		if exclude[id] {
 			continue
 		}
 		if node.GetStatus() != zatterav1.NodeStatus_NODE_STATUS_ALIVE || !node.GetSchedulable() {
+			continue
+		}
+		if !platform.Supports(node.GetOsArch(), platforms) {
+			archRejected = true
 			continue
 		}
 		if !labelsMatch(node.GetLabels(), spec.GetPlacementConstraints()) {
@@ -58,6 +71,9 @@ func Place(st *state.Store, spec *zatterav1.ServiceSpec, envID string, n int, ex
 			continue // stateful + volume: only the volume's node
 		}
 		cands = append(cands, node)
+	}
+	if len(cands) == 0 && archRejected {
+		return nil, fmt.Errorf("placement: no node with a supported architecture (need one of %s) for env %s", strings.Join(platforms, ", "), envID)
 	}
 
 	// Base spread counts: replicas of THIS env per node and per region.

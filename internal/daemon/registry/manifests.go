@@ -315,10 +315,12 @@ func (m *Manifests) ResolveManifest(repo, ref, platform string) (digest, mediaTy
 }
 
 // Platforms lists the OCI platform strings a reference can run on: an index's
-// child platforms, or a single-element list for a plain manifest (empty when
-// unknown). Used by T-88 to populate Release.platforms.
+// child platforms, or a single-element list for a plain manifest read from its
+// config blob (empty when unknown). Used by T-88 to populate
+// Release.platforms.
 func (m *Manifests) Platforms(repo, ref string) ([]string, error) {
 	var out []string
+	var configDigest string
 	err := m.db.View(func(tx *bolt.Tx) error {
 		d := resolveRef(tx, repo, ref)
 		if d == "" || tx.Bucket(bktRepoMan).Get([]byte(repo+nul+d)) == nil {
@@ -329,6 +331,11 @@ func (m *Manifests) Platforms(repo, ref string) ([]string, error) {
 			return ErrManifestUnknown
 		}
 		if !meta.Index {
+			// Plain manifest: its config blob carries os/architecture. Edges
+			// are [config, layers...] (see PutManifest).
+			if len(meta.Edges) > 0 {
+				configDigest = meta.Edges[0]
+			}
 			return nil
 		}
 		for _, c := range meta.Children {
@@ -343,7 +350,36 @@ func (m *Manifests) Platforms(repo, ref string) ([]string, error) {
 		}
 		return nil
 	})
-	return out, err
+	if err != nil || configDigest == "" {
+		return out, err
+	}
+	if p, ok := m.configPlatform(configDigest); ok {
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// configPlatform reads an image config blob's os/architecture ("" , false when
+// the blob is missing or carries no platform).
+func (m *Manifests) configPlatform(digest string) (string, bool) {
+	f, err := m.blobs.Open(digest)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = f.Close() }()
+	var cfg struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+		Variant      string `json:"variant"`
+	}
+	if err := json.NewDecoder(io.LimitReader(f, 1<<20)).Decode(&cfg); err != nil || cfg.OS == "" || cfg.Architecture == "" {
+		return "", false
+	}
+	p := cfg.OS + "/" + cfg.Architecture
+	if cfg.Variant != "" {
+		p += "/" + cfg.Variant
+	}
+	return p, true
 }
 
 // Tags lists the tags defined in repo (sorted by bbolt key order).

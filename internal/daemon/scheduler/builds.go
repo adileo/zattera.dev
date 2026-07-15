@@ -242,6 +242,7 @@ func (d *BuildDispatcher) dispatch(ctx context.Context, b *zatterav1.Build) {
 	}
 
 	var digest string
+	var builtPlatforms []string
 	for {
 		ev, err := d.recv(runCtx, stream)
 		if errors.Is(err, errBuilderLost) {
@@ -261,6 +262,9 @@ func (d *BuildDispatcher) dispatch(ctx context.Context, b *zatterav1.Build) {
 		}
 		if ev.GetImageDigest() != "" {
 			digest = ev.GetImageDigest()
+		}
+		if len(ev.GetPlatforms()) > 0 {
+			builtPlatforms = ev.GetPlatforms()
 		}
 		if ev.GetError() != "" {
 			d.fail(ctx, b, ev.GetError())
@@ -282,6 +286,11 @@ func (d *BuildDispatcher) dispatch(ctx context.Context, b *zatterav1.Build) {
 	deployRef := repo + "@" + digest
 	if d.cfg.LocalLoad {
 		deployRef = req.PushImageRef
+	}
+	// The builder reports what it actually built: an empty requested list
+	// resolves to its native platform, so the release records the real arch.
+	if len(builtPlatforms) > 0 {
+		b.Platforms = builtPlatforms
 	}
 	d.succeed(ctx, b, deployRef)
 }

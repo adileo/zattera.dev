@@ -6,10 +6,9 @@ order; a task may start when its `Depends` are done. Each phase ends with
 something runnable.
 
 > **Status:** tasks marked ✅ **DONE** are complete. This currently covers
-> **T-01 … T-54** (the full M1 milestone, exit gate green in CI) plus **T-89**
-> and **T-90** (production ingress + public API TLS/ACME). Everything else is
-> still open; next up are the multi-arch stragglers **T-87**/**T-88**, then
-> Phase 6 (M2).
+> **T-01 … T-54** (the full M1 milestone, exit gate green in CI), **T-87** and
+> **T-88** (multi-arch), plus **T-89** and **T-90** (production ingress +
+> public API TLS/ACME). Everything else is still open; next up is Phase 6 (M2).
 
 ## What already exists (do not rebuild)
 
@@ -1245,7 +1244,7 @@ the mesh).
 **Tests:** unit — retention keeps active/previous/last-10, sweeps the rest.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestRetention`
 
-### T-87 — Multi-arch protos + reliable node arch reporting
+### T-87 — Multi-arch protos + reliable node arch reporting  ✅ **DONE**
 Phase 4 · Depends: — · Size: S
 **Files:** `api/proto/zattera/v1/deploy.proto` (additive),
 `api/proto/zattera/v1/app.proto` (additive), `api/gen` (regenerate),
@@ -1286,7 +1285,7 @@ boot registration sets `os_arch` (assert via state after daemon start helper).
 **Acceptance:** `make generate && git diff --exit-code api/gen` after commit;
 `go test ./internal/pkgutil/platform/ ./internal/appconfig/`
 
-### T-88 — Arch-aware placement + release platform resolution
+### T-88 — Arch-aware placement + release platform resolution  ✅ **DONE**
 Phase 4 · Depends: T-87, T-24, T-25, T-32 · Size: M
 **Files:** `internal/daemon/scheduler/placement.go` (extend, owned by T-24),
 `internal/daemon/scheduler/scheduler.go` (extend, owned by T-23),

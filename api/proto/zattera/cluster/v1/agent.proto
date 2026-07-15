@@ -254,6 +254,9 @@ message BuildEvent {
   zattera.v1.BuildStatus status = 2; // sent on transitions
   string image_digest = 3;           // set on success
   string error = 4;
+  // OCI platforms the image was actually built for (set on success). Resolves
+  // an empty requested list to the builder's native platform (T-88).
+  repeated string platforms = 5;
 }
 
 message CancelBuildRequest {

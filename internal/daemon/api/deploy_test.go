@@ -149,6 +149,95 @@ func TestDeploy(t *testing.T) {
 	})
 }
 
+// TestDeployPlatforms covers T-88's deploy-time platform resolution: platforms
+// are frozen into the release from the resolver (image-ref deploys) or the
+// build record, and inspection failures never fail a deploy.
+func TestDeployPlatforms(t *testing.T) {
+	rs := raftstore.NewTestStore(t)
+	st := rs.State()
+	s := NewDeployServer(st, rs, clock.NewFake(), t.TempDir())
+	ctx := context.Background()
+
+	newEnv := func(id string) {
+		st.PutEnvironment(&zatterav1.Environment{
+			Meta: &zatterav1.Meta{Id: id}, ProjectId: "p1", AppId: "a1",
+			Service: &zatterav1.ServiceSpec{Replicas: &zatterav1.ReplicaRange{Min: 1}},
+		})
+	}
+	releasePlatforms := func(t *testing.T, dep *zatterav1.Deployment) []string {
+		t.Helper()
+		rel, ok := st.Release(dep.GetReleaseId())
+		if !ok {
+			t.Fatal("release not found")
+		}
+		return rel.GetPlatforms()
+	}
+
+	t.Run("image-ref deploy freezes the resolver's platforms", func(t *testing.T) {
+		newEnv("env-idx")
+		s.Platforms = func(_ context.Context, ref string) []string {
+			if ref != "reg:5000/p1/a1:v1" {
+				t.Fatalf("resolver got ref %q", ref)
+			}
+			return []string{"linux/amd64", "linux/arm64"}
+		}
+		dep, err := s.Deploy(ctx, &zatterav1.DeployRequest{EnvironmentId: "env-idx", ImageRef: "reg:5000/p1/a1:v1"})
+		if err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+		if got := releasePlatforms(t, dep); len(got) != 2 || got[0] != "linux/amd64" || got[1] != "linux/arm64" {
+			t.Fatalf("release platforms = %v", got)
+		}
+	})
+
+	t.Run("resolver failure leaves platforms empty and the deploy succeeds", func(t *testing.T) {
+		newEnv("env-fail")
+		s.Platforms = func(context.Context, string) []string { return nil } // inspect failed
+		dep, err := s.Deploy(ctx, &zatterav1.DeployRequest{EnvironmentId: "env-fail", ImageRef: "private.example.com/app:1"})
+		if err != nil {
+			t.Fatalf("deploy must not fail over inspection: %v", err)
+		}
+		if got := releasePlatforms(t, dep); len(got) != 0 {
+			t.Fatalf("platforms should be empty (unconstrained), got %v", got)
+		}
+	})
+
+	t.Run("nil resolver leaves platforms empty (regression)", func(t *testing.T) {
+		newEnv("env-nil")
+		s.Platforms = nil
+		dep, err := s.Deploy(ctx, &zatterav1.DeployRequest{EnvironmentId: "env-nil", ImageRef: "nginx:1"})
+		if err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+		if got := releasePlatforms(t, dep); len(got) != 0 {
+			t.Fatalf("platforms should be empty, got %v", got)
+		}
+	})
+
+	t.Run("build-id deploy takes the build's platforms, not the resolver", func(t *testing.T) {
+		newEnv("env-build")
+		s.Platforms = func(context.Context, string) []string {
+			t.Fatal("resolver must not run for build deploys")
+			return nil
+		}
+		st.PutBuild(&zatterav1.Build{
+			Meta:     &zatterav1.Meta{Id: "b1"},
+			Status:   zatterav1.BuildStatus_BUILD_STATUS_SUCCEEDED,
+			ImageRef: "reg:5000/p1/a1@sha256:abc",
+			Platforms: []string{
+				"linux/arm64",
+			},
+		})
+		dep, err := s.Deploy(ctx, &zatterav1.DeployRequest{EnvironmentId: "env-build", BuildId: "b1"})
+		if err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+		if got := releasePlatforms(t, dep); len(got) != 1 || got[0] != "linux/arm64" {
+			t.Fatalf("release platforms = %v, want the build's [linux/arm64]", got)
+		}
+	})
+}
+
 // fakeDeployWatch captures the first streamed deployment and cancels its context
 // so WatchDeployment's loop returns.
 type fakeDeployWatch struct {

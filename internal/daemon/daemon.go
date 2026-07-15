@@ -304,6 +304,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	// exec. In single-node/dev the node dials its own :8444 over loopback.
 	agentLocalConnect := newAgentLocalConnect(authority, nodeID, log)
 	uploadsDir := filepath.Join(cfg.DataDir, "uploads")
+	deploySrv := api.NewDeployServer(st, rs, clk, uploadsDir)
 
 	apiSrv, err := api.New(api.Options{
 		CA:                authority,
@@ -316,7 +317,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		AppService:        api.NewAppServer(st, rs, clk, sealer),
 		PublicHostname:    apiPubHost,
 		PublicCertificate: apiPubCert,
-		DeployService:     api.NewDeployServer(st, rs, clk, uploadsDir),
+		DeployService:     deploySrv,
 		StateService:      api.NewStateServer(st, rs, clk),
 		NodeService:       api.NewNodeServer(st, rs, clk, authority),
 		AuditService:      auditor,
@@ -347,8 +348,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 	var retentionSweeper scheduler.RegistrySweeper
 	if reg, err := startRegistry(ctx, cfg, st, authority, clk, log); err != nil {
 		log.Warn("registry start failed; continuing without it", "err", err)
+		deploySrv.Platforms = platformResolver(nil, "", log)
 	} else if reg != nil {
 		retentionSweeper = reg.Manifests // prune images for GC'd releases (T-38)
+		deploySrv.Platforms = platformResolver(reg, registryClientAddr(cfg), log)
 	}
 
 	// Node liveness (T-21): the leader turns livestate heartbeats into durable

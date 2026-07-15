@@ -65,7 +65,7 @@ func (s *Scheduler) placeJob(ctx context.Context, st *state.Store, job *zatterav
 		return nil // no release/image yet; stay queued and retry next tick
 	}
 
-	nodes, err := Place(st, rel.GetService(), env.GetMeta().GetId(), 1, nil)
+	nodes, err := Place(st, rel, env.GetMeta().GetId(), 1, nil)
 	if err != nil || len(nodes) == 0 {
 		s.emitEvent(ctx, env, "job.no_capacity", "warning", "cannot place job %s: %v", job.GetMeta().GetId(), err)
 		return nil // stay queued; the loop retries

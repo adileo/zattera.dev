@@ -201,6 +201,9 @@ func (o *Orchestrator) checkBuild(ctx context.Context, rel *zatterav1.Release, d
 		}
 		if rel.GetImageRef() != b.GetImageRef() {
 			rel.ImageRef = b.GetImageRef()
+			// The build knows what it produced (T-88): freeze its platforms
+			// into the release so placement is arch-aware.
+			rel.Platforms = b.GetPlatforms()
 			if err := o.apply(ctx, &clusterv1.Command{Mutation: &clusterv1.Command_PutRelease{PutRelease: &clusterv1.PutRelease{Release: rel}}}); err != nil {
 				return err
 			}
@@ -219,7 +222,7 @@ func (o *Orchestrator) place(ctx context.Context, st *state.Store, env *zatterav
 	desired := deployReplicas(env, rel)
 
 	if len(green) < desired {
-		picks, _ := Place(st, rel.GetService(), env.GetMeta().GetId(), desired-len(green), nodeSet(green))
+		picks, _ := Place(st, rel, env.GetMeta().GetId(), desired-len(green), nodeSet(green))
 		var puts []*zatterav1.Assignment
 		for _, nodeID := range picks {
 			puts = append(puts, greenAssignment(env, rel, nodeID, d.GetMeta().GetId()))
