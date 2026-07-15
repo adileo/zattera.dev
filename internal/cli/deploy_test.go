@@ -152,19 +152,19 @@ func TestDeployCLI(t *testing.T) {
 			t.Fatalf("expected a Released success line, got stdout=%q stderr=%q", out, errOut)
 		}
 		// The watch resends only on phase change, so a fast deploy coalesces
-		// rapid transitions and any single mid-deploy phase (e.g. "promoting")
-		// may be skipped in the stream. Assert only that some in-flight progress
-		// was shown before the terminal state.
-		inFlight := []string{"pending", "building", "placing replicas", "starting", "health checking", "promoting"}
+		// rapid transitions — in the extreme, the only phase the stream ever
+		// delivers is the terminal "released (draining old)". Assert that the
+		// watch printed at least one phase line, terminal included.
+		phases := []string{"pending", "building", "placing replicas", "starting", "health checking", "promoting", "released (draining old)"}
 		progressed := false
-		for _, ph := range inFlight {
+		for _, ph := range phases {
 			if strings.Contains(errOut, ph) {
 				progressed = true
 				break
 			}
 		}
 		if !progressed {
-			t.Fatalf("expected some deploy phase progress on stderr, got %q", errOut)
+			t.Fatalf("expected a deploy phase line on stderr, got %q", errOut)
 		}
 	})
 
