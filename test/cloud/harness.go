@@ -29,9 +29,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
+	"math"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,8 +56,6 @@ const (
 	defaultRegion    = "nbg1"
 	defaultImage     = "debian-12"
 	defaultMaxAge    = 3 * time.Hour
-	amd64ServerType  = "cx22"  // Intel/AMD, amd64
-	arm64ServerType  = "cax11" // Ampere, arm64
 	provisionTimeout = 5 * time.Minute
 	joinTimeout      = 3 * time.Minute
 )
@@ -83,7 +82,8 @@ type Cluster struct {
 	control *Node
 	api     *apiclient.Client
 
-	networkID int64 // private network for NAT simulation (lazily created)
+	networkID   int64             // private network for NAT simulation (lazily created)
+	serverTypes map[string]string // arch → resolved server type (cached)
 }
 
 // NewCluster builds a harness bound to t. It SKIPS the test when HCLOUD_TOKEN
@@ -238,15 +238,50 @@ func (c *Cluster) destroyAll() {
 
 // --- helpers --------------------------------------------------------------
 
-func serverTypeForArch(arch string) (string, error) {
+// resolveServerType picks the Hetzner server type for an arch. An explicit env
+// override (ZT_CLOUD_{AMD64,ARM64}_TYPE) always wins; otherwise it queries the
+// API for the cheapest non-deprecated type of that arch orderable in the
+// region — so a deprecated/unavailable type never breaks a run. Cached per arch.
+func (c *Cluster) resolveServerType(arch string) string {
+	c.T.Helper()
+	var override string
 	switch arch {
 	case "amd64":
-		return amd64ServerType, nil
+		override = os.Getenv("ZT_CLOUD_AMD64_TYPE")
 	case "arm64":
-		return arm64ServerType, nil
+		override = os.Getenv("ZT_CLOUD_ARM64_TYPE")
 	default:
-		return "", fmt.Errorf("cloud: unsupported arch %q (want amd64|arm64)", arch)
+		c.T.Fatalf("cloud: unsupported arch %q (want amd64|arm64)", arch)
+		return ""
 	}
+	if override != "" {
+		return override
+	}
+	if c.serverTypes == nil {
+		c.serverTypes = map[string]string{}
+	}
+	if t, ok := c.serverTypes[arch]; ok {
+		return t
+	}
+
+	types, err := c.driver.AvailableServerTypes(c.Ctx, c.region)
+	if err != nil {
+		c.T.Fatalf("cloud: list server types in %s: %v", c.region, err)
+	}
+	best, bestPrice := "", math.MaxFloat64
+	for _, st := range types {
+		if st.Arch == arch && st.HourlyPriceEUR > 0 && st.HourlyPriceEUR < bestPrice {
+			best, bestPrice = st.Name, st.HourlyPriceEUR
+		}
+	}
+	if best == "" {
+		c.T.Fatalf("cloud: no non-deprecated %s server type is orderable in %s "+
+			"(try a different ZT_CLOUD_REGION, or set ZT_CLOUD_%s_TYPE explicitly)",
+			arch, c.region, strings.ToUpper(arch))
+	}
+	c.serverTypes[arch] = best
+	c.T.Logf("cloud: auto-selected %s type %q (€%.4f/h) in %s", arch, best, bestPrice, c.region)
+	return best
 }
 
 func envOr(key, def string) string {

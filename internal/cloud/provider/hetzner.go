@@ -114,6 +114,87 @@ func (h *Hetzner) List(ctx context.Context, labelSelector map[string]string) ([]
 	return out, nil
 }
 
+// ServerTypeInfo is a server type orderable in a region, normalized.
+type ServerTypeInfo struct {
+	Name           string
+	Arch           string // normalized: "amd64" | "arm64"
+	HourlyPriceEUR float64
+	Cores          int
+	MemoryGB       float64
+}
+
+// AvailableServerTypes returns the NON-deprecated server types actually
+// ORDERABLE in region, normalized. Orderability is the datacenters endpoint's
+// server_types.available set — NOT the price list (a type can carry a price for
+// a location it is not currently orderable in). The harness uses this to
+// auto-pick a valid type per arch instead of hardcoding names that get
+// deprecated or run out of capacity in a location.
+func (h *Hetzner) AvailableServerTypes(ctx context.Context, region string) ([]ServerTypeInfo, error) {
+	// 1. Which server type IDs are orderable in this location's datacenter(s)?
+	var dcResp struct {
+		Datacenters []struct {
+			Location struct {
+				Name string `json:"name"`
+			} `json:"location"`
+			ServerTypes struct {
+				Available []int64 `json:"available"`
+			} `json:"server_types"`
+		} `json:"datacenters"`
+	}
+	if err := h.do(ctx, http.MethodGet, "/datacenters?per_page=50", nil, &dcResp); err != nil {
+		return nil, err
+	}
+	avail := map[int64]bool{}
+	for _, dc := range dcResp.Datacenters {
+		if dc.Location.Name != region {
+			continue
+		}
+		for _, id := range dc.ServerTypes.Available {
+			avail[id] = true
+		}
+	}
+
+	// 2. Join with the catalogue for name/arch/price, keeping only orderable,
+	//    non-deprecated types.
+	var stResp struct {
+		ServerTypes []struct {
+			ID           int64   `json:"id"`
+			Name         string  `json:"name"`
+			Cores        int     `json:"cores"`
+			Memory       float64 `json:"memory"`
+			Architecture string  `json:"architecture"`
+			Deprecation  *struct {
+				UnavailableAfter string `json:"unavailable_after"`
+			} `json:"deprecation"`
+			Prices []hetznerPrice `json:"prices"`
+		} `json:"server_types"`
+	}
+	if err := h.do(ctx, http.MethodGet, "/server_types?per_page=50", nil, &stResp); err != nil {
+		return nil, err
+	}
+	var out []ServerTypeInfo
+	for _, st := range stResp.ServerTypes {
+		if !avail[st.ID] || st.Deprecation != nil {
+			continue
+		}
+		var price float64
+		for _, p := range st.Prices {
+			if p.Location == region {
+				price = parsePrice(p.PriceHourly.Gross)
+				break
+			}
+		}
+		out = append(out, ServerTypeInfo{
+			Name:           st.Name,
+			Arch:           normalizeArch(st.Architecture),
+			HourlyPriceEUR: price,
+			Cores:          st.Cores,
+			MemoryGB:       st.Memory,
+		})
+	}
+	return out, nil
+}
+
 func (h *Hetzner) PriceEURPerHour(ctx context.Context, region, serverType string) (float64, error) {
 	var resp struct {
 		ServerTypes []struct {

@@ -13,6 +13,7 @@ import "testing"
 //	HCLOUD_TOKEN=... go test -tags cloud ./test/cloud/ -run TestSmoke -v
 func TestSmoke(t *testing.T) {
 	c := NewCluster(t)
+	c.RequireArch("arm64") // mixed-arch check needs ARM64 capacity; skips if absent
 
 	control := c.StartControl("amd64", "cloud-smoke.zattera.invalid")
 	worker := c.JoinWorker("arm64")

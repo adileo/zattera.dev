@@ -19,11 +19,11 @@ import (
 func TestThreeNodeCluster(t *testing.T) {
 	c := NewCluster(t)
 
-	// 1 control + 2 workers = 3 nodes. Mixed arch exercises real cross-arch
-	// join + reporting; swap to all-amd64 for a slightly faster/cheaper run.
+	// 1 control + 2 workers = 3 nodes, all amd64 (broadly available). For a
+	// mixed-arch cluster see TestSmoke, which requires arm64 capacity.
 	c.StartControl("amd64", "cloud-3node.zattera.invalid")
 	c.JoinWorker("amd64")
-	c.JoinWorker("arm64")
+	c.JoinWorker("amd64")
 
 	// Barrier: every node registered and ALIVE.
 	c.WaitNodesReady(3)

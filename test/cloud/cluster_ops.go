@@ -139,6 +139,25 @@ func (c *Cluster) WaitNodeRegistered(name string) {
 	c.T.Fatalf("cloud: node %q never registered within %s", name, joinTimeout)
 }
 
+// RequireArch skips the test unless a server type of arch is orderable in the
+// region. Many Hetzner accounts/locations have no ARM64 (cax) capacity, so
+// mixed-arch scenarios call this to skip cleanly rather than fail on create.
+func (c *Cluster) RequireArch(arch string) {
+	c.T.Helper()
+	types, err := c.driver.AvailableServerTypes(c.Ctx, c.region)
+	if err != nil {
+		c.T.Fatalf("cloud: check %s availability: %v", arch, err)
+	}
+	for _, st := range types {
+		if st.Arch == arch {
+			return
+		}
+	}
+	c.T.Skipf("cloud: no %s server type orderable in %s — skipping "+
+		"(set ZT_CLOUD_REGION to a location that offers %s, or request %s capacity from Hetzner)",
+		arch, c.region, arch, arch)
+}
+
 // WaitNodesReady blocks until at least count nodes are registered AND report
 // status ALIVE — the "the cluster is fully up" barrier scenarios wait on.
 func (c *Cluster) WaitNodesReady(count int) {

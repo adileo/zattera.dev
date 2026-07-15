@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -64,10 +63,7 @@ func (c *Cluster) CreateNode(spec NodeSpec) *Node {
 	if spec.Arch == "" {
 		spec.Arch = "amd64"
 	}
-	serverType, err := serverTypeForArch(spec.Arch)
-	if err != nil {
-		c.T.Fatal(err)
-	}
+	serverType := c.resolveServerType(spec.Arch)
 	if spec.Name == "" {
 		spec.Name = fmt.Sprintf("zt-%s-%s-%d", c.runID, spec.Role, len(c.nodes)+1)
 	}
@@ -225,17 +221,35 @@ func (n *Node) MustRun(cmd string) string {
 	return out
 }
 
-// Push writes content to remotePath on the node (via a heredoc over SSH — no
-// scp dependency), then chmods it.
+// Push writes content to remotePath on the node by STREAMING it over the SSH
+// session's stdin into `cat` — no scp dependency, and no size limit (embedding
+// bytes in the command string blows past the remote ARG_MAX for large files
+// like the ~44 MiB binary).
 func (n *Node) Push(content []byte, remotePath, mode string) {
 	n.c.T.Helper()
+	n.mu.Lock()
+	client := n.ssh
+	n.mu.Unlock()
+	if client == nil {
+		n.c.T.Fatalf("cloud: %s has no ssh session", n.spec.Name)
+		return
+	}
+	sess, err := client.NewSession()
+	if err != nil {
+		n.c.T.Fatalf("cloud: push new session: %v", err)
+		return
+	}
+	defer func() { _ = sess.Close() }()
+
 	dir := filepath.Dir(remotePath)
-	// base64 avoids any quoting/escaping hazards for binaries and configs.
-	enc := base64Encode(content)
-	script := fmt.Sprintf("mkdir -p %s && base64 -d > %s <<'B64EOF'\n%s\nB64EOF\nchmod %s %s",
-		shQuote(dir), shQuote(remotePath), enc, mode, shQuote(remotePath))
-	if out, err := n.Run(script); err != nil {
-		n.c.T.Fatalf("cloud: push %s to %s: %v\n%s", mode, remotePath, err, out)
+	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod %s %s",
+		shQuote(dir), shQuote(remotePath), mode, shQuote(remotePath))
+	sess.Stdin = bytes.NewReader(content)
+	var out bytes.Buffer
+	sess.Stdout = &out
+	sess.Stderr = &out
+	if err := sess.Run(cmd); err != nil {
+		n.c.T.Fatalf("cloud: push to %s: %v\n%s", remotePath, err, out.String())
 	}
 }
 
@@ -387,11 +401,11 @@ func (c *Cluster) buildBinary(arch string) string {
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
+	root := repoRootDir()
+	if root == "" {
 		t.Fatal("cloud: cannot locate repo root")
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+	return root
 }
 
 const systemdUnit = `[Unit]

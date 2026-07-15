@@ -17,15 +17,31 @@ keep-on-fail reaper) on top.
 
 ## Running
 
+Put your token in a gitignored `.env` at the repo root (autoloaded by the
+tests; a real env var still wins):
+
 ```bash
-export HCLOUD_TOKEN=...          # a Hetzner Cloud API token (see safety below)
-make test-cloud                  # runs every scenario
+echo 'HCLOUD_TOKEN=...' >> .env    # see safety below — use a DEDICATED project
+make test-cloud                    # runs every scenario
 # or a single scenario:
 go test -tags cloud -v ./test/cloud/ -run TestThreeNodeCluster
 ```
 
-Without `HCLOUD_TOKEN` the tests **skip** — `go test ./...` never spins paid
-infra. The `cloud` build tag keeps the harness out of normal builds.
+Without a token the tests **skip** — `go test ./...` never spins paid infra.
+The `cloud` build tag keeps the harness out of normal builds.
+
+Server types are auto-selected: the harness queries which types are actually
+orderable in the region (`GET /datacenters`) and picks the cheapest
+non-deprecated one per arch, so a deprecated/unavailable type never breaks a
+run. See what's available without creating anything:
+
+```bash
+go test -tags cloud -v ./test/cloud/ -run TestCloudListTypes
+```
+
+> Heads-up: many Hetzner accounts/locations have **no ARM64 (`cax`) capacity**.
+> `TestCloudListTypes` shows this; arm64 scenarios (`TestSmoke`) skip cleanly
+> when it's absent. amd64 works everywhere.
 
 ### Cost & safety
 
@@ -126,4 +142,6 @@ Capabilities:
 | `ZT_CLOUD_KEEP` | off | on failure, keep the cluster up + print an attach kit |
 | `ZT_CLOUD_MAX_AGE` | `3h` | reaper max age for harness resources |
 | `ZT_CLOUD_ALLOW_SHARED_PROJECT` | off | disable the guard that refuses to run in a non-dedicated project |
+| `ZT_CLOUD_AMD64_TYPE` | `cpx11` | Hetzner server type for amd64 nodes (override if deprecated) |
+| `ZT_CLOUD_ARM64_TYPE` | `cax11` | Hetzner server type for arm64 nodes |
 | `ZT_CLOUD_API` | real API | override the API base URL (tests) |
