@@ -20,6 +20,9 @@ message Release {
   ServiceSpec service = 8; // frozen copy of the spec at release time
   ReleaseSource source = 9;
   string created_by_user_id = 10;
+  // OCI platform strings the image runs on ("linux/amd64"). Empty =
+  // unconstrained (legacy releases, uninspectable external images).
+  repeated string platforms = 11;
 }
 
 message ReleaseSource {
@@ -80,6 +83,8 @@ message Build {
   string error = 11;
   google.protobuf.Timestamp started_at = 12;
   google.protobuf.Timestamp finished_at = 13;
+  // OCI platforms the build targets; empty = builder-node arch only.
+  repeated string platforms = 14;
 }
 
 enum BuildStatus {

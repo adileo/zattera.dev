@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -28,6 +27,7 @@ import (
 	"github.com/zattera-dev/zattera/internal/config"
 	"github.com/zattera-dev/zattera/internal/daemon/mesh"
 	"github.com/zattera-dev/zattera/internal/daemon/nodeinfo"
+	"github.com/zattera-dev/zattera/internal/pkgutil/platform"
 	"github.com/zattera-dev/zattera/internal/pkgutil/version"
 )
 
@@ -94,7 +94,7 @@ func runJoin(ctx context.Context, cfg config.Config, log *slog.Logger) (*joinRes
 		NodeName:            cfg.NodeName,
 		ExistingNodeId:      readNodeID(cfg.DataDir),
 		CsrPem:              csrPEM,
-		OsArch:              runtime.GOOS + "/" + runtime.GOARCH,
+		OsArch:              platform.Local(),
 		BinaryVersion:       version.Version,
 		Capacity:            &zatterav1.ResourceLimits{CpuMillis: capacity.CPUMillis, MemoryMb: capacity.MemoryMB},
 		CapacityDiskMb:      capacity.DiskMB,

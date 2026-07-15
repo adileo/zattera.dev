@@ -24,6 +24,9 @@ message BuildConfig {
   string dockerfile_path = 2; // default "Dockerfile"
   string context_dir = 3;     // default "."
   map<string, string> build_args = 4;
+  // OCI platforms to build for ("linux/amd64"); empty = cluster-arch default
+  // resolved at build time.
+  repeated string platforms = 5;
 }
 
 enum BuildType {

@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -49,6 +48,7 @@ import (
 	"github.com/zattera-dev/zattera/internal/daemon/tlsmgr"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
+	"github.com/zattera-dev/zattera/internal/pkgutil/platform"
 	"github.com/zattera-dev/zattera/internal/pkgutil/version"
 	"github.com/zattera-dev/zattera/internal/state"
 )
@@ -529,10 +529,11 @@ func registerLocalNode(ctx context.Context, rs *raftstore.Store, cfg config.Conf
 	}
 	now := timestamppb.Now()
 	// Worker nodes can build (T-54): label them builder=true so the dispatcher
-	// can place builds. Single-node/dev thus builds locally.
-	var labels map[string]string
+	// can place builds. Single-node/dev thus builds locally. The os-arch label
+	// mirrors the authoritative OsArch field for label-based constraints.
+	labels := map[string]string{"zattera.dev/os-arch": platform.Local()}
 	if cfg.HasRole(config.RoleWorker) {
-		labels = map[string]string{"builder": "true"}
+		labels["builder"] = "true"
 	}
 	node := &zatterav1.Node{
 		Meta:           &zatterav1.Meta{Id: nodeID, CreatedAt: now, UpdatedAt: now},
@@ -543,7 +544,7 @@ func registerLocalNode(ctx context.Context, rs *raftstore.Store, cfg config.Conf
 		Schedulable:    true,
 		Capacity:       &zatterav1.ResourceLimits{CpuMillis: capacity.CPUMillis, MemoryMb: capacity.MemoryMB},
 		CapacityDiskMb: capacity.DiskMB,
-		OsArch:         runtime.GOOS + "/" + runtime.GOARCH,
+		OsArch:         platform.Local(),
 	}
 	// Preserve creation time if already registered.
 	if existing, ok := rs.State().Node(nodeID); ok {

@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
+	"github.com/zattera-dev/zattera/internal/pkgutil/platform"
 )
 
 // AppConfig is the parsed, defaulted result. Build/Services/Domains are exactly
@@ -60,6 +61,7 @@ type buildSection struct {
 	Context    string            `toml:"context"`
 	Image      string            `toml:"image"`
 	Args       map[string]string `toml:"args"`
+	Platforms  []string          `toml:"platforms"`
 }
 
 type githubSection struct {
@@ -153,9 +155,13 @@ func build(f *file) (*AppConfig, error) {
 	if f.App.Name == "" {
 		return nil, fmt.Errorf("appconfig: [app] name is required")
 	}
+	bc, err := buildConfig(f.Build)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &AppConfig{
 		Name:         f.App.Name,
-		Build:        buildConfig(f.Build),
+		Build:        bc,
 		Image:        buildImage(f.Build),
 		Services:     map[string]*zatterav1.ServiceSpec{},
 		Domains:      map[string][]string{},
@@ -190,10 +196,10 @@ func build(f *file) (*AppConfig, error) {
 	return cfg, nil
 }
 
-func buildConfig(b *buildSection) *zatterav1.BuildConfig {
+func buildConfig(b *buildSection) (*zatterav1.BuildConfig, error) {
 	bc := &zatterav1.BuildConfig{DockerfilePath: "Dockerfile", ContextDir: "."}
 	if b == nil {
-		return bc
+		return bc, nil
 	}
 	bc.Type = buildType(b.Type)
 	if b.Dockerfile != "" {
@@ -205,7 +211,17 @@ func buildConfig(b *buildSection) *zatterav1.BuildConfig {
 	if len(b.Args) > 0 {
 		bc.BuildArgs = b.Args
 	}
-	return bc
+	// Platforms are normalized here so everything downstream (builds,
+	// releases, placement) sees canonical "os/arch" strings. Absent = empty
+	// (cluster-arch default resolved at build time).
+	for _, p := range b.Platforms {
+		n, err := platform.Normalize(p)
+		if err != nil {
+			return nil, fmt.Errorf("appconfig: build.platforms: %w", err)
+		}
+		bc.Platforms = append(bc.Platforms, n)
+	}
+	return bc, nil
 }
 
 func buildImage(b *buildSection) string {

@@ -39,6 +39,10 @@ func TestParseFull(t *testing.T) {
 	if cfg.Build.GetBuildArgs()["NODE_ENV"] != "production" {
 		t.Errorf("build args = %+v", cfg.Build.GetBuildArgs())
 	}
+	// Platforms are normalized on parse (aarch64 → arm64).
+	if p := cfg.Build.GetPlatforms(); len(p) != 2 || p[0] != "linux/amd64" || p[1] != "linux/arm64" {
+		t.Errorf("build platforms = %v", p)
+	}
 	if cfg.GitHub.GetRepo() != "acme/web" || !cfg.GitHub.GetPreviewEnvironments() {
 		t.Errorf("github = %+v", cfg.GitHub)
 	}
@@ -137,6 +141,8 @@ func TestValidationErrors(t *testing.T) {
 		{"bad duration", "[app]\nname='x'\n[env.prod]\nidle_timeout='soon'\n", "invalid duration"},
 		{"bad cron fields", "[app]\nname='x'\n[[cron]]\nschedule='0 2 * *'\n", "5-field cron"},
 		{"volume missing path", "[app]\nname='x'\n[env.prod]\n[[env.prod.volumes]]\nname='v'\n", "mount_path are required"},
+		{"bad platform", "[app]\nname='x'\n[build]\nplatforms=['linux/sparc']\n", "build.platforms"},
+		{"malformed platform", "[app]\nname='x'\n[build]\nplatforms=['amd64']\n", "os/arch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

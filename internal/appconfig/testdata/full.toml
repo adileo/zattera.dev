@@ -5,6 +5,7 @@ name = "web"
 type = "dockerfile"
 dockerfile = "docker/Dockerfile"
 context = "src"
+platforms = ["linux/amd64", "linux/aarch64"]
 [build.args]
 NODE_ENV = "production"
 

@@ -2654,6 +2654,13 @@
         "finishedAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "OCI platforms the build targets; empty = builder-node arch only."
         }
       },
       "description": "Build tracks one image build (spec §3.4). Build logs live in the log store\nunder the build id."
@@ -2677,6 +2684,13 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "OCI platforms to build for (\"linux/amd64\"); empty = cluster-arch default\nresolved at build time."
         }
       },
       "description": "BuildConfig mirrors [build] in zattera.toml."
@@ -4009,6 +4023,13 @@
         },
         "createdByUserId": {
           "type": "string"
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "OCI platform strings the image runs on (\"linux/amd64\"). Empty =\nunconstrained (legacy releases, uninspectable external images)."
         }
       },
       "description": "Release is an immutable (image, config) pair per environment (spec §4).\nVersion numbers are per-environment and monotonic (v1, v2, ...)."
