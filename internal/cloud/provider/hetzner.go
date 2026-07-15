@@ -249,6 +249,27 @@ func (h *Hetzner) EnsureSSHKey(ctx context.Context, name, publicKey string, labe
 	return list.SSHKeys[0].ID, nil
 }
 
+// ListSSHKeys returns uploaded SSH key IDs matching the label selector.
+func (h *Hetzner) ListSSHKeys(ctx context.Context, labelSelector map[string]string) ([]int64, error) {
+	path := "/ssh_keys"
+	if sel := encodeLabelSelector(labelSelector); sel != "" {
+		path += "?label_selector=" + sel
+	}
+	var resp struct {
+		SSHKeys []struct {
+			ID int64 `json:"id"`
+		} `json:"ssh_keys"`
+	}
+	if err := h.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(resp.SSHKeys))
+	for _, k := range resp.SSHKeys {
+		ids = append(ids, k.ID)
+	}
+	return ids, nil
+}
+
 // DeleteSSHKey removes an uploaded key (idempotent).
 func (h *Hetzner) DeleteSSHKey(ctx context.Context, id int64) error {
 	err := h.do(ctx, http.MethodDelete, "/ssh_keys/"+strconv.FormatInt(id, 10), nil, nil)

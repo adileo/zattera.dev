@@ -71,6 +71,8 @@ Each test case is one `*_test.go` file in this package; they share the harness
 |------|------|----------------|
 | `smoke_test.go` | `TestSmoke` | cheapest check: 2-node mixed-arch cluster forms, arch reported |
 | `threenode_test.go` | `TestThreeNodeCluster` | 1 control + 2 workers, all register + ALIVE |
+| `webapp_test.go` | `TestWebApp` | deploy go-hello as a 3-replica web app (source build → registry → rollout), assert 3 healthy replicas spread across nodes + serving over the ingress |
+| `types_test.go` | `TestCloudListTypes` | read-only: orderable server types per region |
 | `reap_test.go` | `TestCloudReap` | operational: destroy all leftover harness resources |
 
 **Add a scenario:** drop a new `<case>_test.go` with

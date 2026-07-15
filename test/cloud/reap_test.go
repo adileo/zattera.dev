@@ -48,4 +48,11 @@ func TestCloudReap(t *testing.T) {
 		}
 		t.Logf("cloud: reaped %d network(s)", len(nets))
 	}
+	// SSH keys leak when a run is interrupted before teardown (free, but tidy).
+	if keys, err := d.ListSSHKeys(ctx, sel); err == nil {
+		for _, id := range keys {
+			_ = d.DeleteSSHKey(ctx, id)
+		}
+		t.Logf("cloud: reaped %d ssh key(s)", len(keys))
+	}
 }

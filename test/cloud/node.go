@@ -342,21 +342,26 @@ func (n *Node) WaitAPIListening() {
 	})
 }
 
-// CaptureBootstrap reads the one-time admin token + CA fingerprint from the
-// control node's journal (they are printed once at first boot).
+// CaptureBootstrap polls the control node's journal for the one-time admin
+// token + CA fingerprint (printed at first boot). It POLLS rather than reads
+// once: on a slow node the token can land in the journal a little after :8443
+// starts listening.
 func (n *Node) CaptureBootstrap() (token, caFP string) {
 	n.c.T.Helper()
-	out := n.MustRun("journalctl -u zattera --no-pager")
-	if m := tokenRE.FindString(out); m != "" {
-		n.bootstrapToken = m
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		out, _ := n.Run("journalctl -u zattera --no-pager")
+		if m := tokenRE.FindString(out); m != "" {
+			n.bootstrapToken = m
+			if fp := caFPRE.FindStringSubmatch(out); len(fp) == 2 {
+				n.caFingerprint = fp[1]
+			}
+			return n.bootstrapToken, n.caFingerprint
+		}
+		time.Sleep(2 * time.Second)
 	}
-	if m := caFPRE.FindStringSubmatch(out); len(m) == 2 {
-		n.caFingerprint = m[1]
-	}
-	if n.bootstrapToken == "" {
-		n.c.T.Fatal("cloud: bootstrap token not found in control journal (stale data dir? destroy and retry)")
-	}
-	return n.bootstrapToken, n.caFingerprint
+	n.c.T.Fatal("cloud: bootstrap token not found in control journal after 90s (stale data dir? destroy and retry)")
+	return "", ""
 }
 
 // Journal returns the last n lines of a systemd unit's log (for bundles).
