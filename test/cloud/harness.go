@@ -84,10 +84,6 @@ type Cluster struct {
 
 	networkID   int64             // private network for NAT simulation (lazily created)
 	serverTypes map[string]string // arch → resolved server type (cached)
-
-	// set by LoginCLI for app-deploy scenarios.
-	cliBin    string
-	cliConfig string
 }
 
 // NewCluster builds a harness bound to t. It SKIPS the test when HCLOUD_TOKEN

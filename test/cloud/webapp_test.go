@@ -25,26 +25,18 @@ func TestWebApp(t *testing.T) {
 	c.JoinWorker("amd64")
 	c.WaitNodesReady(3)
 
-	// CLI login + let every node trust the embedded registry so workers can
-	// pull the built image.
-	c.LoginCLI()
+	// Every node trusts the embedded registry so workers can pull the built image.
 	c.TrustRegistryCA()
 
-	// Deploy the fixture pinned to 3 replicas.
+	// Deploy the fixture (pinned to 3 replicas) as a source build, via the API.
 	appDir := prepareHelloFixture(t, 3)
-	if out, err := c.cli("", "projects", "create", "webapp"); err != nil {
-		t.Logf("cloud: projects create (ok if it already exists): %v\n%s", err, out)
-	}
-	// Deploy is a source build → registry → red/green rollout. We do NOT gate on
-	// the CLI's stdout/exit: when the cluster is reached by public IP, the
-	// deploy watch stream can drop mid-rollout, leaving empty output / an early
-	// exit even though the rollout completes server-side. The real outcome is
-	// verified below via `ps` + the ingress curl.
-	out, err := c.cli(appDir, "deploy", "--prod", "--project", "webapp")
-	t.Logf("cloud: deploy returned (err=%v), output:\n%s", err, out)
+	depID, envID := c.DeploySource("webapp", appDir)
 
-	// 3 healthy replicas (cold source build is slow), spread across ≥2 nodes.
-	nodes := c.WaitHealthyReplicas("webapp", "hello", 3, 8*time.Minute)
+	// Build → rollout completes (fails fast with a reason if the build breaks).
+	c.WaitDeployment("webapp", depID, 8*time.Minute)
+
+	// 3 healthy replicas spread across ≥2 nodes.
+	nodes := c.WaitHealthyReplicas("webapp", envID, 3, 3*time.Minute)
 	if len(nodes) < 2 {
 		t.Errorf("cloud: 3 replicas should spread across ≥2 nodes, landed on %d: %v", len(nodes), nodes)
 	}
