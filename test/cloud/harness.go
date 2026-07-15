@@ -82,8 +82,9 @@ type Cluster struct {
 	control *Node
 	api     *apiclient.Client
 
-	networkID   int64             // private network for NAT simulation (lazily created)
-	serverTypes map[string]string // arch → resolved server type (cached)
+	networkID     int64             // private network for NAT simulation (lazily created)
+	serverTypes   map[string]string // arch → resolved server type (cached)
+	clusterDomain string            // cfg.Domain used for the control node (sslip.io by default)
 }
 
 // NewCluster builds a harness bound to t. It SKIPS the test when HCLOUD_TOKEN

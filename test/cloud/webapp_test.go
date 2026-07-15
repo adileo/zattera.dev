@@ -19,8 +19,10 @@ import (
 func TestWebApp(t *testing.T) {
 	c := NewCluster(t)
 
-	// 3-node cluster (control is also a worker + the builder).
-	c.StartControl("amd64", "cloud-webapp.zattera.invalid")
+	// 3-node cluster (control is also a worker + the builder). Empty domain →
+	// a real sslip.io domain derived from the control's public IP, so the app's
+	// URL resolves over public DNS to the ingress.
+	c.StartControl("amd64", "")
 	c.JoinWorker("amd64")
 	c.JoinWorker("amd64")
 	c.WaitNodesReady(3)
@@ -43,9 +45,9 @@ func TestWebApp(t *testing.T) {
 		t.Errorf("cloud: 3 replicas should spread across ≥2 nodes, landed on %d: %v", len(nodes), nodes)
 	}
 
-	// Additionally probe public routing through the ingress (best-effort — logs
-	// but does not fail; a throwaway fake domain lacks real cert/DNS setup).
-	c.ProbeIngress(c.control, "hello-production.cloud-webapp.zattera.invalid", "Hello from Zattera fixture", 60*time.Second)
+	// Additionally probe public routing: GET the app's real HTTPS URL (resolves
+	// via sslip.io straight to the ingress). Best-effort — logs, never fails.
+	c.ProbeIngressURL(c.AppHost("hello", "production"), "Hello from Zattera fixture", 90*time.Second)
 }
 
 // prepareHelloFixture copies the go-hello fixture to a temp dir and pins the

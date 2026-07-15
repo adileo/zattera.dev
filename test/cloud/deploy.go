@@ -5,8 +5,10 @@ package cloud
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,25 +185,40 @@ func (c *Cluster) WaitHealthyReplicas(project, envID string, want int, timeout t
 	return nil
 }
 
-// ProbeIngress polls the app through a node's OWN ingress (:80 → 308 → :443,
-// self-signed on-demand cert accepted with -k, host resolved to loopback) and
-// reports whether it served `want`. Best-effort: it LOGS the outcome and never
-// fails the test — healthy replicas already prove the app serves HTTP (the
-// healthcheck GETs it); this only additionally exercises public ingress routing,
-// which depends on cluster domain/cert setup a throwaway fake domain may lack.
-func (c *Cluster) ProbeIngress(node *Node, host, want string, timeout time.Duration) bool {
+// ProbeIngressURL GETs https://<host>/ from the TEST MACHINE and reports whether
+// it served `want`. With an sslip.io cluster domain, host resolves over real
+// public DNS to the control's public IP, so this exercises the full external
+// path (public DNS → ingress :443 → route → app). TLS verification is skipped
+// (the on-demand cert is self-signed from the cluster CA when ACME is off).
+//
+// Best-effort: it LOGS the outcome and never fails the test — healthy replicas
+// already prove the app serves HTTP (the healthcheck GETs it); this additionally
+// confirms public ingress routing.
+func (c *Cluster) ProbeIngressURL(host, want string, timeout time.Duration) bool {
 	c.T.Helper()
-	body := fmt.Sprintf("curl -ksSL --max-time 10 --resolve %s:80:127.0.0.1 --resolve %s:443:127.0.0.1 http://%s/", host, host, host)
+	url := "https://" + host + "/"
+	client := &http.Client{
+		Timeout:   12 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
 	deadline := time.Now().Add(timeout)
+	var last string
 	for time.Now().Before(deadline) {
-		if out, _ := node.Run(body); strings.Contains(out, want) {
-			c.T.Logf("cloud: ✓ app served via ingress: %q", strings.TrimSpace(out))
-			return true
+		resp, err := client.Get(url)
+		if err == nil {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+			_ = resp.Body.Close()
+			if strings.Contains(string(b), want) {
+				c.T.Logf("cloud: ✓ app served publicly at %s: %q", url, strings.TrimSpace(string(b)))
+				return true
+			}
+			last = fmt.Sprintf("HTTP %d, body=%q", resp.StatusCode, strings.TrimSpace(string(b)))
+		} else {
+			last = err.Error()
 		}
 		time.Sleep(3 * time.Second)
 	}
-	diag, _ := node.Run(fmt.Sprintf("curl -ksS -o /dev/null -w 'http_code=%%{http_code} err=%%{errormsg}' --max-time 10 --resolve %s:80:127.0.0.1 --resolve %s:443:127.0.0.1 http://%s/ 2>&1", host, host, host))
-	c.T.Logf("cloud: ⚠ app not reachable via public ingress at %s (best-effort; replicas are healthy so the app IS serving). curl: %s", host, strings.TrimSpace(diag))
+	c.T.Logf("cloud: ⚠ app not reachable publicly at %s (best-effort; replicas are healthy so the app IS serving). last: %s", url, last)
 	return false
 }
 

@@ -18,9 +18,19 @@ import (
 // binary → config → start → wait API → capture bootstrap token. It memoizes the
 // control node and an authenticated API client on the cluster for JoinWorker,
 // Nodes(), and assertions.
+//
+// An empty domain auto-derives a REAL, resolvable cluster domain from the
+// control's public IP via sslip.io (apps.<ip>.sslip.io) — so an app's cluster
+// subdomain (<app>-<env>.apps.<ip>.sslip.io) resolves over public DNS straight
+// to the ingress, and can be reached at its real HTTPS URL (see AppHost /
+// ProbeIngressURL) without /etc/hosts or --resolve tricks.
 func (c *Cluster) StartControl(arch, domain string) *Node {
 	c.T.Helper()
 	n := c.CreateNode(NodeSpec{Role: "control", Arch: arch})
+	if domain == "" {
+		domain = "apps." + n.PublicIPv4() + ".sslip.io"
+	}
+	c.clusterDomain = domain
 	n.InstallDocker()
 	n.InstallBinary()
 	n.WriteControlConfig(domain)
@@ -28,8 +38,15 @@ func (c *Cluster) StartControl(arch, domain string) *Node {
 	n.WaitAPIListening()
 	n.CaptureBootstrap()
 	c.control = n
-	c.T.Logf("cloud: control %s up at https://%s:8443", n.Name(), n.PublicIPv4())
+	c.T.Logf("cloud: control %s up at https://%s:8443 (domain %s)", n.Name(), n.PublicIPv4(), domain)
 	return n
+}
+
+// AppHost returns an app's implicit cluster-subdomain host
+// (<app>-<env>.<cluster-domain>). With an sslip.io domain this resolves over
+// public DNS to the ingress.
+func (c *Cluster) AppHost(app, env string) string {
+	return app + "-" + env + "." + c.clusterDomain
 }
 
 // JoinWorker brings up a worker that joins the control node and waits until it
