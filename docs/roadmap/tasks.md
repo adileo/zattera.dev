@@ -6,8 +6,10 @@ order; a task may start when its `Depends` are done. Each phase ends with
 something runnable.
 
 > **Status:** tasks marked ✅ **DONE** are complete. This currently covers
-> **T-01 … T-53** (the full M1 milestone) plus **T-89** and **T-90** (production
-> ingress + public API TLS/ACME). Everything else is still open.
+> **T-01 … T-54** (the full M1 milestone, exit gate green in CI) plus **T-89**
+> and **T-90** (production ingress + public API TLS/ACME). Everything else is
+> still open; next up are the multi-arch stragglers **T-87**/**T-88**, then
+> Phase 6 (M2).
 
 ## What already exists (do not rebuild)
 
@@ -1709,7 +1711,7 @@ AssignmentObserved.exit_code.
 ignores job assignments for replica math.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestJobs`
 
-### T-54 — E2E smoke test (M1 exit)
+### T-54 — E2E smoke test (M1 exit)  ✅ **DONE**
 Phase 5 · Depends: ALL P1–P5 · Size: L
 **Files:** `test/e2e/smoke_test.go`, `test/e2e/harness.go`, Makefile (verify
 `test-e2e` wiring)
