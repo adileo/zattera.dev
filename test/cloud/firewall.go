@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/zattera-dev/zattera/test/cloud/provider"
+	"github.com/zattera-dev/zattera/internal/cloud/provider"
 )
 
 // Zattera's inbound ports (see the real-cluster docs): API, ingress, registry,

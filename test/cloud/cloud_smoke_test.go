@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zattera-dev/zattera/test/cloud/provider"
+	"github.com/zattera-dev/zattera/internal/cloud/provider"
 )
 
 // TestCloudSmoke brings up a REAL mixed-arch cluster on Hetzner — an amd64

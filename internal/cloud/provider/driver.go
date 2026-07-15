@@ -1,19 +1,21 @@
-// Package provider is the cloud-infrastructure abstraction the real-cluster
-// test harness (test/cloud) uses to spin, inspect, and destroy VMs on a real
-// provider (Hetzner today; others later).
+// Package provider is a production cloud-infrastructure client: it spins,
+// inspects, and destroys VMs on a real provider (Hetzner today; others later).
 //
-// The Driver interface below is deliberately shaped like the FROZEN production
-// autoscaling driver planned in Phase 8 (roadmap T-82,
-// `internal/daemon/provision`): the same Create/Destroy/Get/List/
-// PriceEURPerHour surface, the same normalized statuses, the same idempotent
-// Destroy. The Hetzner implementation here is a working raw-REST prototype of
-// T-83 — when Phase 8 lands, promote it into `internal/daemon/provision` and
-// have this harness import that instead of carrying its own copy.
+// It has two consumers by design. Today the real-cluster test harness
+// (test/cloud) imports it. In Phase 8 the node autoscaler (roadmap T-82/T-84,
+// internal/daemon/provision) imports the SAME package — the Driver interface
+// below is the frozen, provider-agnostic lifecycle that autoscaling consumes
+// (Create/Destroy/Get/List/PriceEURPerHour, normalized statuses, idempotent
+// Destroy). Living under internal/cloud rather than test/ is deliberate: it is
+// reusable production code, not a test-only prototype, so there is no future
+// move and no risk of a divergent second copy.
 //
-// Test-only concerns the production driver must NEVER grow — SSH keys, firewall
-// and private-network manipulation, NAT simulation — live as EXTRA methods on
-// the concrete *Hetzner type, not on the Driver interface. That keeps the
-// interface promotable while giving the harness the superset it needs.
+// The concrete *Hetzner type also carries provider-client operations the
+// autoscaler may use but the Driver interface deliberately omits (SSH keys,
+// firewalls, private networks) — keeping the interface minimal and
+// provider-agnostic. Genuinely test-only orchestration (NAT simulation via a
+// jump host, fault injection, debug bundles, the keep-on-fail reaper schedule)
+// stays in test/cloud and never leaks here.
 package provider
 
 import (

@@ -35,8 +35,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/zattera-dev/zattera/internal/cloud/provider"
 	"github.com/zattera-dev/zattera/pkg/apiclient"
-	"github.com/zattera-dev/zattera/test/cloud/provider"
 )
 
 // Label keys stamped on every harness-created resource.

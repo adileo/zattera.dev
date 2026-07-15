@@ -5,10 +5,15 @@ single-host container rig cannot give: genuine mixed-arch nodes, kernel
 WireGuard, real NAT/firewalls, real MTU. Hetzner today; the provider
 abstraction generalizes.
 
-This replaces the bash `test/real-cluster` scripts. It is the test-side
-prototype of the Phase 8 autoscaling driver (roadmap T-82/T-83): the
-`provider` package's `Driver` interface + raw-REST Hetzner client are shaped to
-be promoted into `internal/daemon/provision` when that lands.
+This replaces the bash `test/real-cluster` scripts.
+
+The cloud client itself lives in **`internal/cloud/provider`** (production code,
+not test-only): its `Driver` interface + raw-REST Hetzner client are the frozen
+provider-agnostic lifecycle that the Phase 8 node autoscaler (roadmap
+T-82/T-84, `internal/daemon/provision`) will import directly — the same package,
+no future move. This harness (`test/cloud`) is just its first consumer and adds
+the test-only orchestration (NAT simulation, fault injection, debug bundles,
+keep-on-fail reaper) on top.
 
 ## Running
 

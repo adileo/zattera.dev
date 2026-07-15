@@ -21,7 +21,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/zattera-dev/zattera/test/cloud/provider"
+	"github.com/zattera-dev/zattera/internal/cloud/provider"
 )
 
 // NodeSpec describes a node to create.
