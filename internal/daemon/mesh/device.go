@@ -171,7 +171,12 @@ func (dm *DeviceManager) ApplyPeers(_ context.Context, peers *clusterv1.PeerSet)
 	if err != nil {
 		return err
 	}
-	cfg := deviceConfig{privateKey: dm.priv, listenPort: dm.listenPort, replacePeers: true, peers: pcs}
+	// Do NOT re-send listen_port on peer updates: wireguard-go rebinds (closes +
+	// reopens) the socket whenever listen_port is set, so re-sending it on every
+	// ApplyPeers churns a custom (meshsock) bind until an Open races and leaves
+	// it closed (Send then fails with net.ErrClosed). The port is set once at
+	// device-up; peer updates only replace the peer set.
+	cfg := deviceConfig{privateKey: dm.priv, replacePeers: true, peers: pcs}
 	if err := dm.backend.apply(cfg); err != nil {
 		return fmt.Errorf("mesh: apply peers: %w", err)
 	}

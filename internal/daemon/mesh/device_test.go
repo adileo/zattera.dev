@@ -90,7 +90,7 @@ func TestBuildPeerConfigs(t *testing.T) {
 			Endpoints:                  []string{"1.2.3.4:51820", "5.6.7.8:51820"},
 		}},
 	}
-	pcs, err := buildPeerConfigs(peers)
+	pcs, err := buildPeerConfigs(peers, false)
 	if err != nil {
 		t.Fatalf("buildPeerConfigs: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestBuildPeerConfigs(t *testing.T) {
 	}
 
 	// A bad public key is a hard error.
-	if _, err := buildPeerConfigs(&clusterv1.PeerSet{Peers: []*clusterv1.Peer{{WireguardPublicKey: "not-base64"}}}); err == nil {
+	if _, err := buildPeerConfigs(&clusterv1.PeerSet{Peers: []*clusterv1.Peer{{WireguardPublicKey: "not-base64"}}}, false); err == nil {
 		t.Fatal("expected error for invalid public key")
 	}
 }
@@ -140,8 +140,9 @@ func TestApplyPeersRendersUAPI(t *testing.T) {
 	if len(fake.configs) != 1 {
 		t.Fatalf("expected 1 IpcSet call, got %d", len(fake.configs))
 	}
+	// ApplyPeers deliberately omits listen_port (set once at device-up) so a
+	// custom meshsock bind is not rebound/churned on every peer update.
 	want := "private_key=0100000000000000000000000000000000000000000000000000000000000000\n" +
-		"listen_port=51820\n" +
 		"replace_peers=true\n" +
 		"public_key=0200000000000000000000000000000000000000000000000000000000000000\n" +
 		"endpoint=1.2.3.4:51820\n" +
