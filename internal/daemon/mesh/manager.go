@@ -10,6 +10,7 @@ import (
 	"net/netip"
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
+	"github.com/zattera-dev/zattera/internal/daemon/mesh/meshsock"
 )
 
 // NodeConfig is what a node needs to bring its mesh interface up.
@@ -21,6 +22,20 @@ type NodeConfig struct {
 	ListenPort uint16
 	// InterfaceName defaults to "zt0" (utunN chosen automatically on darwin).
 	InterfaceName string
+	// Meshsock, when set, brings the device up on the userspace meshsock bind
+	// (UDP hole punching + relay, phases C/D). Kernel WG cannot use a custom
+	// bind, so this forces userspace.
+	Meshsock *MeshsockConfig
+}
+
+// MeshsockConfig parameterizes the meshsock datapath (T-57/T-58).
+type MeshsockConfig struct {
+	NodeID string
+	CAHash []byte
+	// Punch coordinates hole punching via control (nil disables punching).
+	Punch meshsock.PunchRequester
+	// Relay sends WG packets via the control TCP relay (nil disables the relay).
+	Relay meshsock.RelaySender
 }
 
 // Status describes the current mesh device state.

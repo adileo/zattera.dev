@@ -74,7 +74,18 @@ type MeshConfig struct {
 	// PublicEndpoints this node is reachable at ("ip:port"); autodetected
 	// when empty and the node has a public address.
 	PublicEndpoints []string `toml:"public_endpoints"`
+	// Mode selects the WireGuard datapath (ADR-0003):
+	//   "" / "auto"  — kernel WG when available, else userspace; phases A/B
+	//                  (hub + direct peering) only.
+	//   "meshsock"   — userspace WG with the meshsock bind: UDP hole punching
+	//                  (phase C) + TCP relay fallback (phase D). Use on NAT'd
+	//                  nodes that need worker↔worker connectivity without a
+	//                  routable endpoint.
+	Mode string `toml:"mode"`
 }
+
+// MeshsockEnabled reports whether this node should use the meshsock datapath.
+func (m MeshConfig) MeshsockEnabled() bool { return m.Mode == "meshsock" }
 
 type ACMEConfig struct {
 	Email    string `toml:"email"`

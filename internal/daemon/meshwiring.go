@@ -139,11 +139,20 @@ func startWorkerMesh(ctx context.Context, cfg config.Config, jr *joinResult, log
 		return nil, fmt.Errorf("daemon: worker mesh ip %q: %w", jr.MeshIP, err)
 	}
 	dm := mesh.NewDeviceManager(log)
+	// meshsock datapath (T-57/T-58): build the punch + relay clients before Up
+	// so the device comes up on the custom bind (NAT hole punching + relay).
+	// dm.InjectRelayed/PunchNow are no-ops until Up creates the bind, so wiring
+	// them here is safe.
+	msCfg, err := meshsockSetup(ctx, cfg, jr, dm, log)
+	if err != nil {
+		log.Warn("meshsock setup failed; using plain userspace/kernel WG", "err", err)
+	}
 	if err := dm.Up(ctx, mesh.NodeConfig{
 		PrivateKeyPath: wgKeyPath(cfg.DataDir),
 		MeshIP:         addr,
 		ListenPort:     meshListenPort(cfg),
 		InterfaceName:  cfg.Mesh.Interface,
+		Meshsock:       msCfg,
 	}); err != nil {
 		return nil, err
 	}

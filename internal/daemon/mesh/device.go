@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 	wgdevice "golang.zx2c4.com/wireguard/device"
@@ -16,6 +17,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
+	"github.com/zattera-dev/zattera/internal/daemon/mesh/meshsock"
 )
 
 const (
@@ -59,6 +61,12 @@ type DeviceManager struct {
 	backend   deviceBackend
 	up        bool
 	peerPaths map[string]string
+
+	// meshsock is the custom bind when the meshsock datapath is active (T-57);
+	// nil for kernel/plain-userspace WG. When set, ApplyPeers also feeds its
+	// path manager peer identities + candidate addresses.
+	msCfg *MeshsockConfig
+	bind  *meshsock.Bind
 }
 
 // NewDeviceManager builds a mesh manager backed by a real WG device. The
@@ -103,6 +111,7 @@ func (dm *DeviceManager) Up(_ context.Context, cfg NodeConfig) error {
 		dm.ifname = defaultInterfaceName()
 	}
 	dm.meshIP = cfg.MeshIP
+	dm.msCfg = cfg.Meshsock
 
 	backend, actualName, err := dm.createBackend()
 	if err != nil {
@@ -125,9 +134,23 @@ func (dm *DeviceManager) Up(_ context.Context, cfg NodeConfig) error {
 	return nil
 }
 
-// createBackend prefers kernel WireGuard on Linux, falling back to the
-// userspace device.
+// createBackend selects the datapath: the meshsock userspace bind when
+// configured (phases C/D), else kernel WireGuard on Linux, else plain
+// userspace.
 func (dm *DeviceManager) createBackend() (deviceBackend, string, error) {
+	if dm.msCfg != nil {
+		bind := meshsock.New(meshsock.Config{
+			NodeID:      dm.msCfg.NodeID,
+			WGPublicKey: [32]byte(dm.pub),
+			CAHash:      dm.msCfg.CAHash,
+			Punch:       dm.msCfg.Punch,
+			Relay:       dm.msCfg.Relay,
+			Logger:      dm.log,
+		})
+		dm.bind = bind
+		dm.log.Info("mesh using meshsock datapath (hole punching + relay)", "iface", dm.ifname)
+		return newUserspaceBackendWithBind(dm.ifname, bind, dm.log)
+	}
 	if b, name, err := newKernelBackend(dm.ifname, dm.listenPort, dm.log); err == nil {
 		dm.log.Debug("mesh using kernel wireguard", "iface", name)
 		return b, name, nil
@@ -144,13 +167,18 @@ func (dm *DeviceManager) ApplyPeers(_ context.Context, peers *clusterv1.PeerSet)
 	if dm.backend == nil {
 		return errors.New("mesh: device is not up")
 	}
-	pcs, err := buildPeerConfigs(peers)
+	pcs, err := buildPeerConfigs(peers, dm.bind != nil)
 	if err != nil {
 		return err
 	}
 	cfg := deviceConfig{privateKey: dm.priv, listenPort: dm.listenPort, replacePeers: true, peers: pcs}
 	if err := dm.backend.apply(cfg); err != nil {
 		return fmt.Errorf("mesh: apply peers: %w", err)
+	}
+	// Feed the meshsock path manager the peers' identities + candidate
+	// addresses so it can probe/punch toward them.
+	if dm.bind != nil {
+		dm.bind.SetPeers(meshsockPeers(peers))
 	}
 	dm.peerPaths = pathsFor(peers)
 	return nil
@@ -193,7 +221,36 @@ func (dm *DeviceManager) Status() Status {
 	for k, v := range dm.peerPaths {
 		st.PeerPaths[k] = v
 	}
+	// The live meshsock path (direct/punched/relay/home) supersedes the
+	// coarse peer-set-derived value when the datapath is active.
+	if dm.bind != nil {
+		for k, v := range dm.bind.PeerPaths() {
+			st.PeerPaths[k] = v
+		}
+	}
 	return st
+}
+
+// PunchNow schedules a probe burst toward peerID at `at` — called when control
+// pushes a PunchCommand over the node's PunchStream. No-op without meshsock.
+func (dm *DeviceManager) PunchNow(peerID string, endpoints []netip.AddrPort, at time.Time) {
+	dm.mu.Lock()
+	bind := dm.bind
+	dm.mu.Unlock()
+	if bind != nil {
+		bind.PunchNow(peerID, endpoints, at)
+	}
+}
+
+// InjectRelayed queues a relay-received WG packet for WireGuard — called by the
+// relay client's read loop. No-op without meshsock.
+func (dm *DeviceManager) InjectRelayed(srcNodeID string, payload []byte) {
+	dm.mu.Lock()
+	bind := dm.bind
+	dm.mu.Unlock()
+	if bind != nil {
+		bind.InjectRelayed(srcNodeID, payload)
+	}
 }
 
 func (dm *DeviceManager) ensureKeyLocked(path string) error {
@@ -213,9 +270,11 @@ func (dm *DeviceManager) ensureKeyLocked(path string) error {
 	return nil
 }
 
-// buildPeerConfigs maps a proto PeerSet to resolved peer configs. The endpoint
-// is the first candidate (smarter path selection is T-57).
-func buildPeerConfigs(peers *clusterv1.PeerSet) ([]peerConfig, error) {
+// buildPeerConfigs maps a proto PeerSet to resolved peer configs. With
+// meshsock, the endpoint is rendered "nodeID@host" (or "nodeID@" when the peer
+// has no configured endpoint) so the bind manages it and can swap in punched /
+// relay paths; otherwise it is the first candidate address (phases A/B).
+func buildPeerConfigs(peers *clusterv1.PeerSet, meshsock bool) ([]peerConfig, error) {
 	out := make([]peerConfig, 0, len(peers.GetPeers()))
 	for _, p := range peers.GetPeers() {
 		pk, err := wgtypes.ParseKey(p.GetWireguardPublicKey())
@@ -227,12 +286,38 @@ func buildPeerConfigs(peers *clusterv1.PeerSet) ([]peerConfig, error) {
 			keepaliveSeconds: uint16(p.GetPersistentKeepaliveSeconds()),
 			allowedIPs:       allowedIPsFor(p, peers.GetHubAndSpoke()),
 		}
+		home := ""
 		if eps := p.GetEndpoints(); len(eps) > 0 {
-			pc.endpoint = eps[0]
+			home = eps[0]
+		}
+		if meshsock {
+			pc.endpoint = p.GetNodeId() + "@" + home // managed endpoint form
+		} else {
+			pc.endpoint = home
 		}
 		out = append(out, pc)
 	}
 	return out, nil
+}
+
+// meshsockPeers extracts peer identities + candidate addresses for the bind's
+// path manager (all endpoints are probe candidates; the bind picks the best).
+func meshsockPeers(peers *clusterv1.PeerSet) []meshsock.PeerInfo {
+	out := make([]meshsock.PeerInfo, 0, len(peers.GetPeers()))
+	for _, p := range peers.GetPeers() {
+		pk, err := wgtypes.ParseKey(p.GetWireguardPublicKey())
+		if err != nil {
+			continue
+		}
+		var cands []netip.AddrPort
+		for _, ep := range p.GetEndpoints() {
+			if ap, err := netip.ParseAddrPort(ep); err == nil {
+				cands = append(cands, ap)
+			}
+		}
+		out = append(out, meshsock.PeerInfo{NodeID: p.GetNodeId(), WGPublicKey: [32]byte(pk), Candidates: cands})
+	}
+	return out
 }
 
 // allowedIPsFor resolves a peer's AllowedIPs: the explicit set if present, else
@@ -331,10 +416,15 @@ func (b *userspaceBackend) close() error {
 	return nil
 }
 
-// newUserspaceBackend creates a TUN + wireguard-go device. Requires
-// root/CAP_NET_ADMIN; the returned name is the actual interface (utunN on
-// macOS).
+// newUserspaceBackend creates a TUN + wireguard-go device on the default bind.
 func newUserspaceBackend(ifname string, log *slog.Logger) (deviceBackend, string, error) {
+	return newUserspaceBackendWithBind(ifname, conn.NewDefaultBind(), log)
+}
+
+// newUserspaceBackendWithBind creates a TUN + wireguard-go device on the given
+// bind (meshsock or default). Requires root/CAP_NET_ADMIN; the returned name is
+// the actual interface (utunN on macOS).
+func newUserspaceBackendWithBind(ifname string, bind conn.Bind, log *slog.Logger) (deviceBackend, string, error) {
 	tunDev, err := tun.CreateTUN(ifname, meshMTU)
 	if err != nil {
 		return nil, "", fmt.Errorf("mesh: create tun %q (need root/CAP_NET_ADMIN): %w", ifname, err)
@@ -344,7 +434,7 @@ func newUserspaceBackend(ifname string, log *slog.Logger) (deviceBackend, string
 		_ = tunDev.Close()
 		return nil, "", fmt.Errorf("mesh: tun name: %w", err)
 	}
-	dev := wgdevice.NewDevice(tunDev, conn.NewDefaultBind(), wgLogger(log))
+	dev := wgdevice.NewDevice(tunDev, bind, wgLogger(log))
 	if err := dev.Up(); err != nil {
 		dev.Close()
 		return nil, "", fmt.Errorf("mesh: device up: %w", err)

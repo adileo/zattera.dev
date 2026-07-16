@@ -111,6 +111,12 @@ func runJoin(ctx context.Context, cfg config.Config, log *slog.Logger) (*joinRes
 	}
 
 	capacity := nodeinfo.Detect(cfg.DataDir, log)
+	labels := map[string]string{}
+	if cfg.Mesh.MeshsockEnabled() {
+		// Advertise meshsock capability so the peer builder pairs this node
+		// directly with other meshsock nodes for punching/relay (T-57).
+		labels[meshsockLabel] = "true"
+	}
 	resp, err := clusterv1.NewJoinServiceClient(conn).Join(ctx, &clusterv1.JoinRequest{
 		TokenSecret:         secret,
 		NodeName:            cfg.NodeName,
@@ -123,6 +129,7 @@ func runJoin(ctx context.Context, cfg config.Config, log *slog.Logger) (*joinRes
 		WireguardPublicKey:  wgPub,
 		WireguardListenPort: uint32(meshListenPort(cfg)),
 		PublicEndpoints:     cfg.Mesh.PublicEndpoints,
+		DetectedLabels:      labels,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("daemon: join rpc: %w", err)

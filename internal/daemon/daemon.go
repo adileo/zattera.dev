@@ -463,6 +463,12 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 		registerControlMesh(ctx, cfg, rs, controlMesh, authority, nodeID, log)
 	}
 
+	// DERP-lite relay (T-58): every mesh-enabled control node runs the TCP relay
+	// so meshsock nodes can fall back to it when no UDP path works.
+	if !cfg.Mesh.Disabled && meshIP != "" {
+		startRelayServer(ctx, authority, cfg, nodeID, log)
+	}
+
 	// Node agent (T-14): on worker-capable nodes, open the AgentSync stream to
 	// the control plane and send heartbeats. In single-node/dev the control
 	// node dials its own API over loopback with a self-issued node cert (the

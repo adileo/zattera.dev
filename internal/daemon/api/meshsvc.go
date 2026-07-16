@@ -18,6 +18,11 @@ import (
 	"github.com/zattera-dev/zattera/internal/state"
 )
 
+// MeshsockLabel marks a node that runs the meshsock datapath (T-57): such
+// nodes are paired directly by the peer builder regardless of public
+// reachability, because meshsock handles NAT traversal (punch + relay).
+const MeshsockLabel = "zattera.dev/meshsock"
+
 const (
 	// natKeepaliveSeconds keeps a NAT'd worker's hole to the hub (or a punched
 	// worker↔worker path) open.
@@ -143,6 +148,7 @@ func (s *MeshServer) buildPeerSet(selfID string) *clusterv1.PeerSet {
 	}
 	selfControl := hasControlRole(self.GetRoles())
 	selfHasEndpoint := len(self.GetPublicEndpoints()) > 0
+	selfMeshsock := self.GetLabels()[MeshsockLabel] == "true"
 	ps.HubAndSpoke = !selfControl
 
 	for _, n := range nodes {
@@ -159,6 +165,7 @@ func (s *MeshServer) buildPeerSet(selfID string) *clusterv1.PeerSet {
 			MeshIp:             n.GetMeshIp(),
 			Endpoints:          n.GetPublicEndpoints(),
 			IsControl:          isControl,
+			RelayCapable:       isControl, // control nodes run the DERP-lite relay
 		}
 		switch {
 		case selfControl:
@@ -170,6 +177,12 @@ func (s *MeshServer) buildPeerSet(selfID string) *clusterv1.PeerSet {
 			if !selfHasEndpoint {
 				peer.PersistentKeepaliveSeconds = natKeepaliveSeconds
 			}
+		case selfMeshsock && n.GetLabels()[MeshsockLabel] == "true":
+			// Worker → worker over meshsock (T-57): pair directly even with no
+			// public endpoint — the bind punches / relays to reach it. The /32
+			// beats the hub /16 so meshsock owns worker↔worker traffic.
+			peer.AllowedIps = []string{n.GetMeshIp() + "/32"}
+			peer.PersistentKeepaliveSeconds = natKeepaliveSeconds
 		default:
 			// Worker → worker (Phase B): a direct /32 path only when BOTH sides
 			// have a known endpoint. The control peers keep the /16, so WG's
