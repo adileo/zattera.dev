@@ -88,19 +88,38 @@ func (c *Cluster) JoinControl(arch string) *Node {
 	return n
 }
 
-// controlJoinToken mints a single-use CONTROL+WORKER join token via the API.
+// controlJoinToken mints a single-use CONTROL+WORKER join token via the API. It
+// retries transient "no leader" errors: adding a control node triggers a brief
+// raft re-election (the 1→2 membership change), during which mutating calls are
+// momentarily unavailable — a real client retries through leader-forward too.
 func (c *Cluster) controlJoinToken() string {
 	c.T.Helper()
-	ctx, cancel := context.WithTimeout(c.Ctx, 15*time.Second)
-	defer cancel()
-	resp, err := c.API().Nodes.CreateJoinToken(ctx, &zatterav1.CreateJoinTokenRequest{
-		SingleUse: true,
-		Roles:     []zatterav1.NodeRole{zatterav1.NodeRole_NODE_ROLE_CONTROL, zatterav1.NodeRole_NODE_ROLE_WORKER},
+	return c.mintJoinToken("control", []zatterav1.NodeRole{
+		zatterav1.NodeRole_NODE_ROLE_CONTROL, zatterav1.NodeRole_NODE_ROLE_WORKER,
 	})
-	if err != nil {
-		c.T.Fatalf("cloud: create control join token: %v", err)
+}
+
+// mintJoinToken creates a single-use join token, retrying transient leadership
+// gaps for up to 45s (raft re-elections settle in ~1-2s).
+func (c *Cluster) mintJoinToken(kind string, roles []zatterav1.NodeRole) string {
+	c.T.Helper()
+	deadline := time.Now().Add(45 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(c.Ctx, 15*time.Second)
+		resp, err := c.API().Nodes.CreateJoinToken(ctx, &zatterav1.CreateJoinTokenRequest{
+			SingleUse: true,
+			Roles:     roles,
+		})
+		cancel()
+		if err == nil {
+			return resp.GetToken()
+		}
+		lastErr = err
+		time.Sleep(2 * time.Second)
 	}
-	return resp.GetToken()
+	c.T.Fatalf("cloud: create %s join token: %v", kind, lastErr)
+	return ""
 }
 
 // APIFor returns an API client aimed at a specific control node (not memoized),
