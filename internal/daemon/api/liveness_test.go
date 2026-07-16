@@ -8,9 +8,15 @@ import (
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/daemon/livestate"
+	"github.com/zattera-dev/zattera/internal/daemon/nodehealth"
 	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 )
+
+// fakeGossip is a static gossip snapshot for liveness tests.
+type fakeGossip map[string]nodehealth.GossipLiveness
+
+func (f fakeGossip) Snapshot() map[string]nodehealth.GossipLiveness { return f }
 
 func TestLiveness(t *testing.T) {
 	newMon := func(t *testing.T) (*LivenessMonitor, *raftstore.Store, *livestate.Registry, *clock.Fake) {
@@ -85,6 +91,53 @@ func TestLiveness(t *testing.T) {
 		m.evaluate(context.Background())
 		if status(rs, "n1") != zatterav1.NodeStatus_NODE_STATUS_DOWN {
 			t.Fatalf("stale n1 should be DOWN, got %v", status(rs, "n1"))
+		}
+	})
+
+	// --- gossip-accelerated detection (T-56) ---------------------------------
+
+	t.Run("gossip-confirmed death demotes before the heartbeat deadline", func(t *testing.T) {
+		m, rs, live, clk := newMon(t)
+		m.leaderSince = clk.Now().Add(-time.Hour)
+		live.Heartbeat("n1", &clusterv1.Heartbeat{})
+		clk.Advance(15 * time.Second) // stale >10s but WELL within the 30s deadline
+		m.WithGossip(fakeGossip{"n1": {Alive: false}})
+		m.evaluate(context.Background())
+		if status(rs, "n1") != zatterav1.NodeStatus_NODE_STATUS_DOWN {
+			t.Fatalf("gossip-dead n1 should be DOWN before the deadline, got %v", status(rs, "n1"))
+		}
+	})
+
+	t.Run("fresh heartbeat overrides a gossip false-positive (flap guard)", func(t *testing.T) {
+		m, rs, live, clk := newMon(t)
+		m.leaderSince = clk.Now().Add(-time.Hour)
+		live.Heartbeat("n1", &clusterv1.Heartbeat{}) // stale 0s — too fresh to demote
+		m.WithGossip(fakeGossip{"n1": {Alive: false}})
+		m.evaluate(context.Background())
+		if status(rs, "n1") != zatterav1.NodeStatus_NODE_STATUS_ALIVE {
+			t.Fatalf("a very recent heartbeat must keep n1 ALIVE despite gossip, got %v", status(rs, "n1"))
+		}
+	})
+
+	t.Run("gossip keeps a node ALIVE past the heartbeat deadline", func(t *testing.T) {
+		m, rs, live, clk := newMon(t)
+		m.leaderSince = clk.Now().Add(-time.Hour)
+		live.Heartbeat("n1", &clusterv1.Heartbeat{})
+		clk.Advance(heartbeatDeadline + 10*time.Second) // heartbeat stale past 30s
+		m.WithGossip(fakeGossip{"n1": {Alive: true}})
+		m.evaluate(context.Background())
+		if status(rs, "n1") != zatterav1.NodeStatus_NODE_STATUS_ALIVE {
+			t.Fatalf("gossip-alive should keep n1 ALIVE past the heartbeat deadline, got %v", status(rs, "n1"))
+		}
+	})
+
+	t.Run("gossip-confirmed death demotes even during the grace window", func(t *testing.T) {
+		m, rs, _, clk := newMon(t)
+		m.leaderSince = clk.Now() // just elected → in grace
+		m.WithGossip(fakeGossip{"n1": {Alive: false}})
+		m.evaluate(context.Background())
+		if status(rs, "n1") != zatterav1.NodeStatus_NODE_STATUS_DOWN {
+			t.Fatalf("gossip death should bypass grace, got %v", status(rs, "n1"))
 		}
 	})
 }

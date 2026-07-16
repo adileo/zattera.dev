@@ -39,6 +39,7 @@ import (
 	"github.com/zattera-dev/zattera/internal/daemon/ca"
 	"github.com/zattera-dev/zattera/internal/daemon/livestate"
 	"github.com/zattera-dev/zattera/internal/daemon/logstore"
+	"github.com/zattera-dev/zattera/internal/daemon/mesh"
 	"github.com/zattera-dev/zattera/internal/daemon/nodeinfo"
 	"github.com/zattera-dev/zattera/internal/daemon/proxy"
 	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
@@ -220,17 +221,18 @@ func Run(ctx context.Context, cfg config.Config) error {
 		}
 	}
 
-	return runControlPlane(ctx, cfg, rs, nodeID, authority, sealer, keyring, true, log)
+	return runControlPlane(ctx, cfg, rs, nodeID, controlMeshIP(cfg), authority, sealer, keyring, true, log)
 }
 
 // runControlPlane wires and runs the full control-plane stack — API server,
 // scheduler, orchestrator, ingress, registry, node agent and (when it owns it)
 // the WireGuard mesh hub — and blocks until ctx is canceled or the API server
 // errors. It is shared by the bootstrap control node (Run) and a node that
-// joined with the control role (runJoinedControl). bringUpControlMesh brings up
-// the mesh hub device; a joined control node passes false because it already
-// brought its mesh up as a spoke (see runJoinedControl).
-func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store, nodeID string, authority *ca.CA, sealer secrets.Sealer, keyring *secrets.Keyring, bringUpControlMesh bool, log *slog.Logger) error {
+// joined with the control role (runJoinedControl). meshIP is this node's own
+// mesh address (gossip binds it; "" when the mesh is disabled).
+// bringUpControlMesh brings up the mesh hub device; a joined control node passes
+// false because it already brought its mesh up as a spoke (see runJoinedControl).
+func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store, nodeID, meshIP string, authority *ca.CA, sealer secrets.Sealer, keyring *secrets.Keyring, bringUpControlMesh bool, log *slog.Logger) error {
 	st := rs.State()
 
 	// Public API services (T-04 auth, T-05 projects+rbac, T-06 apps) with the
@@ -383,7 +385,19 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 
 	// Node liveness (T-21): the leader turns livestate heartbeats into durable
 	// node status. evaluate() is a no-op on followers.
-	go api.NewLivenessMonitor(st, rs, live, clk, nodeID, log).Run(ctx)
+	livenessMon := api.NewLivenessMonitor(st, rs, live, clk, nodeID, log)
+	// Gossip failure detection (T-56): mesh-enabled control nodes run memberlist
+	// over the mesh so a node death is caught within seconds (vs the 30s
+	// heartbeat deadline). Feeds the same SetNodeStatus path via the flap guard.
+	if !cfg.Mesh.Disabled && meshIP != "" {
+		if g, gerr := startGossip(meshIP, nodeID, authority, st, log); gerr != nil {
+			log.Warn("gossip failure detector unavailable; using heartbeats only", "err", gerr)
+		} else {
+			livenessMon.WithGossip(g)
+			defer func() { _ = g.Shutdown() }()
+		}
+	}
+	go livenessMon.Run(ctx)
 
 	// Scheduler (T-23): the leader reconciles desired replica counts into
 	// assignments. Leader-gated internally.
@@ -757,7 +771,7 @@ func runJoinedControl(ctx context.Context, cfg config.Config, jr *joinResult, lo
 	}
 	log.Info("joined control plane", "node", jr.NodeID)
 
-	return runControlPlane(ctx, cfg, rs, jr.NodeID, authority, sealer, keyring, false, log)
+	return runControlPlane(ctx, cfg, rs, jr.NodeID, jr.MeshIP, authority, sealer, keyring, false, log)
 }
 
 // persistHandoverCA writes the handed-over cluster CA cert + private key to the
@@ -778,6 +792,41 @@ func persistHandoverCA(dataDir string, caCertPEM, caKeyPEM []byte) error {
 		return fmt.Errorf("daemon: write ca.key: %w", err)
 	}
 	return nil
+}
+
+// startGossip brings up the memberlist failure detector on this control node's
+// mesh IP (T-56), seeded with the other control nodes' mesh IPs. The gossip
+// encryption key derives from the cluster CA hash, so only cluster members can
+// join or read it.
+func startGossip(meshIP, nodeID string, authority *ca.CA, st *state.Store, log *slog.Logger) (*mesh.Gossip, error) {
+	caSum := sha256.Sum256(authority.Certificate().Raw)
+	var peers []string
+	for _, n := range st.ListNodes() {
+		if n.GetMeta().GetId() == nodeID || !nodeHasControlRole(n) {
+			continue
+		}
+		if ip := n.GetMeshIp(); ip != "" {
+			peers = append(peers, ip)
+		}
+	}
+	return mesh.NewGossip(mesh.GossipConfig{
+		NodeID:   nodeID,
+		BindAddr: meshIP,
+		Peers:    peers,
+		CAHash:   caSum[:],
+		Clock:    clock.Real{},
+		Logger:   log,
+	})
+}
+
+// nodeHasControlRole reports whether a node carries the control-plane role.
+func nodeHasControlRole(n *zatterav1.Node) bool {
+	for _, r := range n.GetRoles() {
+		if r == zatterav1.NodeRole_NODE_ROLE_CONTROL {
+			return true
+		}
+	}
+	return false
 }
 
 // runWorker runs a joined node in worker mode: it opens the AgentSync stream to

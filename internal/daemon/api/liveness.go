@@ -11,11 +11,19 @@ import (
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/daemon/livestate"
+	"github.com/zattera-dev/zattera/internal/daemon/nodehealth"
 	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 	"github.com/zattera-dev/zattera/internal/state"
 )
+
+// GossipSource is the gossip failure detector's view consumed by the liveness
+// monitor. *mesh.Gossip implements it (via nodehealth). Nil disables the gossip
+// signal (the monitor falls back to heartbeats only — single-node/dev).
+type GossipSource interface {
+	Snapshot() map[string]nodehealth.GossipLiveness
+}
 
 const (
 	livenessTick        = 5 * time.Second
@@ -36,6 +44,8 @@ type LivenessMonitor struct {
 	clock       clock.Clock
 	log         *slog.Logger
 	localNodeID string
+	// gossip is the optional fast failure detector (T-56). Nil = heartbeats only.
+	gossip GossipSource
 
 	// leaderSince marks when this node last acquired leadership (grace anchor).
 	leaderSince time.Time
@@ -57,6 +67,14 @@ func NewLivenessMonitor(store *state.Store, raft Applier, live *livestate.Regist
 		localNodeID: localNodeID,
 		lastFlush:   map[string]time.Time{},
 	}
+}
+
+// WithGossip attaches a gossip failure detector so a node's death is caught
+// within seconds instead of the full heartbeat deadline. Returns the monitor for
+// chaining. Safe to pass nil (no-op).
+func (m *LivenessMonitor) WithGossip(g GossipSource) *LivenessMonitor {
+	m.gossip = g
+	return m
 }
 
 // Run evaluates liveness every 5s until ctx is canceled. The grace window is
@@ -94,26 +112,40 @@ func (m *LivenessMonitor) evaluate(ctx context.Context) {
 			continue
 		}
 		ns, ok := m.live.Get(id)
-		fresh := ok && !ns.LastHeartbeat.IsZero() && now.Sub(ns.LastHeartbeat) <= heartbeatDeadline
-
-		// During the post-election grace window, don't demote a node we simply
-		// haven't heard from yet (livestate is rebuilt from scratch on election).
-		if inGrace && !fresh && n.GetStatus() != zatterav1.NodeStatus_NODE_STATUS_DOWN {
-			continue
+		hbReceived := ok && !ns.LastHeartbeat.IsZero()
+		var hbStaleFor time.Duration
+		if hbReceived {
+			hbStaleFor = now.Sub(ns.LastHeartbeat)
 		}
+		baselineFresh := hbReceived && hbStaleFor <= heartbeatDeadline
 
-		desired := zatterav1.NodeStatus_NODE_STATUS_DOWN
-		if fresh {
-			desired = zatterav1.NodeStatus_NODE_STATUS_ALIVE
+		// Consult the gossip detector (T-56) when configured; combine it with the
+		// heartbeat via the flap guard so a death is caught in seconds without
+		// either detector bouncing a node's status on its own.
+		gossipKnown, gossipAlive := false, false
+		if m.gossip != nil {
+			if gl, present := m.gossip.Snapshot()[id]; present {
+				gossipKnown, gossipAlive = true, gl.Alive
+			}
 		}
-		statusChanged := n.GetStatus() != desired
-		flushHB := fresh && now.Sub(m.lastFlush[id]) >= heartbeatFlushEvery
+		desired, act := m.desiredStatus(nodehealth.LivenessInputs{
+			GossipKnown:       gossipKnown,
+			GossipAlive:       gossipAlive,
+			HeartbeatReceived: hbReceived,
+			HeartbeatStaleFor: hbStaleFor,
+		}, baselineFresh, inGrace, n.GetStatus())
+
+		statusChanged := act && n.GetStatus() != desired
+		flushHB := baselineFresh && now.Sub(m.lastFlush[id]) >= heartbeatFlushEvery
 		if !statusChanged && !flushHB {
 			continue
 		}
+		if !act {
+			desired = n.GetStatus() // flush-only pass: keep the current status
+		}
 
 		var hbAt *timestamppb.Timestamp
-		if fresh {
+		if baselineFresh {
 			hbAt = timestamppb.New(ns.LastHeartbeat)
 		}
 		cmd := &clusterv1.Command{
@@ -139,5 +171,32 @@ func (m *LivenessMonitor) evaluate(ctx context.Context) {
 		if flushHB {
 			m.lastFlush[id] = now
 		}
+	}
+}
+
+// desiredStatus resolves a node's durable status from the combined gossip +
+// heartbeat signals. When the flap guard is inconclusive (gossip has no
+// opinion), it falls back to the heartbeat deadline — reproducing the pre-gossip
+// behaviour exactly when no gossip source is attached. ok=false means leave the
+// status untouched this round (deferred during the post-election grace window).
+func (m *LivenessMonitor) desiredStatus(in nodehealth.LivenessInputs, baselineFresh, inGrace bool, current zatterav1.NodeStatus) (zatterav1.NodeStatus, bool) {
+	switch nodehealth.Decide(in) {
+	case nodehealth.VerdictAlive:
+		return zatterav1.NodeStatus_NODE_STATUS_ALIVE, true
+	case nodehealth.VerdictDown:
+		// Gossip-confirmed death applies even within the grace window: gossip
+		// runs continuously across elections, so its verdict is trustworthy
+		// immediately (unlike heartbeats, which a new leader rebuilds from zero).
+		return zatterav1.NodeStatus_NODE_STATUS_DOWN, true
+	default: // VerdictNoChange — no gossip opinion; use the heartbeat deadline.
+		if baselineFresh {
+			return zatterav1.NodeStatus_NODE_STATUS_ALIVE, true
+		}
+		// Stale past the deadline → DOWN, unless we are still in the grace window
+		// and haven't already demoted it (we may simply not have heard yet).
+		if inGrace && current != zatterav1.NodeStatus_NODE_STATUS_DOWN {
+			return current, false
+		}
+		return zatterav1.NodeStatus_NODE_STATUS_DOWN, true
 	}
 }
