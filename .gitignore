@@ -29,6 +29,7 @@ node_modules/
 
 PERSONAL.md
 TEST_SERVER.md
+CLAUDE.md
 
 # Real-cluster e2e scripts: credentials + per-cluster state
 /zt
