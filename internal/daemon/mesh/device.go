@@ -320,7 +320,10 @@ func meshsockPeers(peers *clusterv1.PeerSet) []meshsock.PeerInfo {
 				cands = append(cands, ap)
 			}
 		}
-		out = append(out, meshsock.PeerInfo{NodeID: p.GetNodeId(), WGPublicKey: [32]byte(pk), Candidates: cands})
+		// The control peer in hub-and-spoke is the always-reachable hub: pin it
+		// to PathHome so meshsock never relays/punches the hub tunnel (T-57c).
+		hub := peers.GetHubAndSpoke() && p.GetIsControl()
+		out = append(out, meshsock.PeerInfo{NodeID: p.GetNodeId(), WGPublicKey: [32]byte(pk), Candidates: cands, Hub: hub})
 	}
 	return out
 }

@@ -192,6 +192,37 @@ func TestPathSymmetricFallsBackToRelay(t *testing.T) {
 	waitPath(t, b.bind, "node-a", "relay", 5*time.Second)
 }
 
+// TestHubPeerNeverRelays: the hub-and-spoke control peer is pinned to PathHome.
+// Even when it never answers a probe (control need not run meshsock) and a relay
+// sender is wired, the path must stay "home" and never escalate to punch/relay —
+// downgrading the always-reachable hub tunnel to an unverified relay is what
+// deadlocked the mesh on real infra (T-57c).
+func TestHubPeerNeverRelays(t *testing.T) {
+	fabric := newFakeNet()
+	ca := fabric.newConn("192.0.2.1:51820")
+	cb := fabric.newConn("192.0.2.2:51820")
+	relay := func(string, []byte) error { return nil }
+	a := newTestNode(t, fabric, "node-a", 'a', ca, ca.local, nil, relay)
+	b := newTestNode(t, fabric, "node-b", 'b', cb, cb.local, nil, nil)
+
+	// b never answers a's probes (stand-in for a control hub not running
+	// meshsock): drop everything to/from b's socket.
+	fabric.setDrop(func(src, dst netip.AddrPort) bool {
+		return dst == cb.local || src == cb.local
+	})
+
+	// a sees b as the hub; b sees a normally. A relay sender is wired, so absent
+	// the hub pin the unanswered peer would escalate to "relay".
+	a.bind.SetPeers([]PeerInfo{{NodeID: b.id, WGPublicKey: testKey(b.seed()), Candidates: []netip.AddrPort{cb.local}, Hub: true}})
+	b.bind.SetPeers([]PeerInfo{{NodeID: a.id, WGPublicKey: testKey(a.seed()), Candidates: []netip.AddrPort{ca.local}}})
+
+	// Well past RelayAfter, the hub path must still be home (never relay/punch).
+	time.Sleep(5 * fastTiming().RelayAfter)
+	if got := a.bind.PeerPaths()["node-b"]; got != "home" {
+		t.Fatalf("hub peer path = %q, want home", got)
+	}
+}
+
 // TestPathLossFallsBackHome: a verified direct path whose peer goes dark drops
 // back to home after the keepalive miss budget.
 func TestPathLossFallsBackHome(t *testing.T) {

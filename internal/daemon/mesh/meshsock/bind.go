@@ -123,6 +123,7 @@ func (b *Bind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	}
 	pc, actual, err := b.cfg.Listen(port)
 	if err != nil {
+		b.log.Error("meshsock bind Open failed", "requested_port", port, "err", err)
 		return nil, 0, err
 	}
 	b.pc = pc
@@ -130,6 +131,7 @@ func (b *Bind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.open = true
 	b.closed = make(chan struct{})
 	b.paths.start()
+	b.log.Info("meshsock bind opened", "requested_port", port, "actual_port", actual)
 	return []conn.ReceiveFunc{b.receiveUDP, b.receiveInjected}, actual, nil
 }
 
@@ -144,6 +146,7 @@ func (b *Bind) Close() error {
 	b.open = false
 	b.paths.stop()
 	close(b.closed)
+	b.log.Info("meshsock bind closed", "port", b.port)
 	return b.pc.Close()
 }
 
@@ -289,6 +292,7 @@ func (b *Bind) SetPeers(peers []PeerInfo) {
 		ps := b.peerByID(p.NodeID)
 		ps.setIdentity(p.WGPublicKey, probeKey(p.WGPublicKey, b.cfg.CAHash))
 		ps.setCandidates(p.Candidates)
+		ps.setHub(p.Hub)
 	}
 	b.peers.Range(func(k, v any) bool {
 		if !seen[k.(string)] {
@@ -307,6 +311,11 @@ type PeerInfo struct {
 	// Candidates are addresses worth probing for a direct path (configured
 	// endpoints + disco-observed reflexive addresses).
 	Candidates []netip.AddrPort
+	// Hub marks the hub-and-spoke control peer, whose configured (home)
+	// endpoint is a public address every node joined over — authoritative and
+	// always reachable. The path manager pins such a peer to PathHome and never
+	// escalates it to punch/relay (relaying to the relay hub itself is circular).
+	Hub bool
 }
 
 // PunchNow schedules a probe burst toward peerID's endpoints at `at`. The

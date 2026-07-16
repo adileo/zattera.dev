@@ -259,6 +259,7 @@ func (n *Node) InstallDocker() {
 	n.c.T.Logf("cloud: [%s] installing docker", n.spec.Name)
 	n.MustRun(`set -e
 if systemctl is-active --quiet firewalld 2>/dev/null; then systemctl disable --now firewalld; fi
+if ! command -v ping >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iputils-ping; fi
 if ! command -v docker >/dev/null 2>&1; then curl -fsSL https://get.docker.com | sh; fi
 systemctl enable --now docker
 docker info --format '{{.ServerVersion}}' >/dev/null`)

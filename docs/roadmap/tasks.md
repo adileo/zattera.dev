@@ -2008,31 +2008,33 @@ relay. **Test:** cloud — two full-cone-NAT'd meshsock workers establish a
 punched worker↔worker path (assert `direct`/`punched`, not `relay`); block UDP →
 verify relay fallback.
 
-### T-57c — meshsock bind lifecycle: WireGuard Send → net.ErrClosed on real infra
+### T-57c — meshsock real-infra: hub relayed + slow relay dial  ✅ **DONE**
 Phase 6 · Depends: T-57 · Size: M
-**Symptom (found via `test/cloud/TestMeshsockRelay`):** on a real cluster the
-meshsock workers come up, register ALIVE, and punch coordination works
-(`RequestPunch`/`PunchStream` verified — log: "meshsock punch coordinated"), and
-the path state machine correctly escalates to the relay ("meshsock path fallback
-to relay"). BUT WireGuard handshakes then fail repeatedly with
-`Failed to send handshake initiation: use of closed network connection` — the
-meshsock `conn.Bind`'s UDP socket is closed (`Bind.Send` → `net.ErrClosed`), so
-no tunnel (direct, punched, or relay) can carry traffic. The bind works
-initially (the worker's AgentSync to control succeeds → it registers), then
-closes.
-**Does NOT reproduce in tests** — the meshsock unit + real-wireguard-go tunnel
-integration tests (over the NAT simulator) all pass, including a full Close+Open
-rebind. So this is a wireguard-go device-lifecycle interaction specific to the
-production path (multiple peers, frequent peersync `ApplyPeers`, real UDP
-socket).
-**Tried:** removing `listen_port` from `ApplyPeers` (wireguard-go rebinds the
-bind on every `listen_port` set) — necessary and correct, but did NOT fix it, so
-there is a second close trigger to find. **Next:** instrument `Bind.Open`/`Close`
-(log every call + caller) on a kept cloud VM; check whether wireguard-go calls
-`Open` on an already-open bind (my `Open` returns `ErrBindAlreadyOpen` — handle
-rebind idempotently), or closes on a receive error. Also: the cloud test host
-image lacks `ping` (`iputils-ping`) — install it or use a Go dial-based
-reachability check in `assertMeshReachable`.
+**Symptom (found via `test/cloud/TestMeshsockRelay`):** meshsock workers come up
+and punch-coordinate fine, but `TestMeshsockRelay` fails — WireGuard handshakes
+fail with `Failed to send handshake initiation: use of closed network
+connection`. The bind-close hypothesis in the original write-up was **wrong**:
+kept-VM logging of `Bind.Open`/`Close` showed the bind opens once (a single
+ephemeral→51820 startup rebind) and then **stays open** — the `net.ErrClosed`
+came from the *relay client's* `Send` (same error string), not the UDP socket.
+**Two real root causes, both fixed:**
+1. **The hub/control peer was escalated off `PathHome` to the relay.** meshsock
+   treated the control peer like any other: no probe pong (control runs plain
+   WG, not meshsock) → "unverified" → `markRelay` after `RelayAfter`. But the
+   relay *rides* the hub tunnel, so relaying the hub itself deadlocks. Fix: mark
+   the hub-and-spoke control peer `Hub` in `PeerInfo` and pin it to `PathHome` —
+   never punch/relay it (`meshsock.PeerInfo.Hub`, `pathManager.evaluatePeer`,
+   `meshsockPeers`). Its public endpoint is authoritative; plain-WG handshake is
+   the liveness test. Regression test: `TestHubPeerNeverRelays`.
+2. **The relay client's first dial hung ~127s.** `relayCli.Run` starts before
+   mesh Up and dials the control *mesh* IP `:7443`; with no per-attempt connect
+   timeout, the SYN to the not-yet-reachable mesh IP hung on kernel SYN retries
+   (~127s) instead of failing fast and retrying once the hub tunnel was up. Fix:
+   `dialTimeout` (8s) wrapping `DialTLS`'s `DialContext`.
+Also: the cloud host image lacked `ping` → `assertMeshReachable`'s ICMP probe
+saw nothing; `Node.InstallDocker` now installs `iputils-ping`. **Acceptance:**
+`test/cloud/TestMeshsockRelay` green on real infra (worker↔worker only via the
+relay).
 
 **old T-58 spec (for reference):**
 Phase 6 · Depends: T-57 · Size: L

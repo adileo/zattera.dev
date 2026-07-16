@@ -85,6 +85,7 @@ type peerState struct {
 	mu         sync.Mutex
 	key        []byte // probe key derived from the peer's WG public key
 	candidates []netip.AddrPort
+	hub        bool // hub-and-spoke control peer: pin PathHome, never escalate
 
 	// probing bookkeeping
 	pending       map[uint64]pendingProbe // txID → in-flight probe
@@ -127,6 +128,12 @@ func (ps *peerState) setCandidates(cands []netip.AddrPort) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	ps.candidates = append([]netip.AddrPort(nil), cands...)
+}
+
+func (ps *peerState) setHub(hub bool) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.hub = hub
 }
 
 // addCandidate appends a discovered candidate (e.g. the source of a ping we
@@ -227,10 +234,20 @@ func (pm *pathManager) evaluatePeer(ps *peerState, now time.Time) {
 	lastPunch := ps.lastPunchReq
 	verifiedAddr := ps.verifiedAddr
 	relayActive := ps.ep.current().kind == PathRelay
+	hub := ps.hub
 	ps.mu.Unlock()
 
 	if !hasKey {
 		return // identity not yet known (no SetPeers for this peer)
+	}
+
+	// The hub peer's home endpoint is a public address every node joined over:
+	// authoritative and always reachable, so PathHome carries WireGuard directly
+	// (its handshake is the liveness test). Never escalate it to punch/relay —
+	// relaying to the relay hub itself is circular, and downgrading a working
+	// home path to an unverified relay is what breaks the mesh on real infra.
+	if hub {
+		return
 	}
 
 	if verified {

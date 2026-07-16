@@ -16,6 +16,12 @@ const RelayPort = 7443
 const (
 	reconnectMin = 500 * time.Millisecond
 	reconnectMax = 15 * time.Second
+	// dialTimeout bounds a single connect attempt. The relay client starts
+	// dialing before the mesh is up (the hub tunnel it rides may not exist
+	// yet), so without this a SYN to the control mesh IP would hang on kernel
+	// SYN retries (~127s) instead of failing fast and retrying via the backoff
+	// loop once the tunnel comes up.
+	dialTimeout = 8 * time.Second
 )
 
 // Client maintains one connection to the lowest-RTT control relay, reconnecting
@@ -149,8 +155,10 @@ func sleep(ctx context.Context, d time.Duration) bool {
 // config. Multi-relay RTT selection wraps this.
 func DialTLS(addr string, tlsCfg *tls.Config) func(ctx context.Context) (net.Conn, string, error) {
 	return func(ctx context.Context) (net.Conn, string, error) {
+		dctx, cancel := context.WithTimeout(ctx, dialTimeout)
+		defer cancel()
 		d := &tls.Dialer{Config: tlsCfg}
-		conn, err := d.DialContext(ctx, "tcp", addr)
+		conn, err := d.DialContext(dctx, "tcp", addr)
 		if err != nil {
 			return nil, addr, err
 		}
