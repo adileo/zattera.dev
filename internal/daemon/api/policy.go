@@ -110,6 +110,8 @@ var methodAuth = map[string]Requirement{
 	"/zattera.cluster.v1.AgentSyncService/Sync":              reqNode,
 	"/zattera.cluster.v1.MeshService/WatchPeers":             reqNode,
 	"/zattera.cluster.v1.MeshService/ReportObservedEndpoint": reqNode,
+	"/zattera.cluster.v1.MeshService/PunchStream":            reqNode,
+	"/zattera.cluster.v1.MeshService/RequestPunch":           reqNode,
 	"/zattera.cluster.v1.RouteService/WatchRoutes":           reqNode,
 	"/zattera.cluster.v1.ActivatorService/Activate":          reqNode,
 

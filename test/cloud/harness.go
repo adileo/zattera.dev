@@ -105,7 +105,7 @@ func NewCluster(t *testing.T) *Cluster {
 		runID:  newRunID(),
 		region: region,
 		keep:   os.Getenv("ZT_CLOUD_KEEP") == "1",
-		keyDir: t.TempDir(),
+		keyDir: "/tmp/zt-cloud-key",
 	}
 
 	c.preflightDedicatedProject()
@@ -191,6 +191,7 @@ func (c *Cluster) ensureSSHKey() {
 	}
 	c.sshKeyID = id
 	// Persist the private key so the attach kit can point ssh at it.
+	_ = os.MkdirAll(c.keyDir, 0o700)
 	if err := os.WriteFile(c.keyPath(), pem, 0o600); err != nil {
 		c.T.Fatalf("cloud: write ssh key: %v", err)
 	}
