@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -35,6 +36,13 @@ type JoinConfig struct {
 	// "7480"). A joining control node's raft address is meshIP:RaftPort. Empty
 	// disables control-node raft handover.
 	RaftPort string
+}
+
+// voter is the raft-membership capability the leader uses to enroll a joining
+// control node. *raftstore.Store implements it; control joins are
+// leader-forwarded, so the handler runs on the leader where it is available.
+type voter interface {
+	AddVoter(nodeID, addr string) error
 }
 
 // JoinServer implements JoinService: token-authenticated node enrollment. It is
@@ -159,15 +167,19 @@ func (s *JoinServer) Join(ctx context.Context, req *clusterv1.JoinRequest) (*clu
 // (spec §2.10). It requires the mesh (raft binds the node's mesh IP); a control
 // token joined mesh-disabled falls back to worker-only.
 //
-// Raft enrollment (AddVoter) is intentionally NOT performed here: the leader
-// must not add a voter before that node's raft transport is listening, or an
-// unreachable voter stalls commits. Enrollment is triggered by the node once it
-// is up (see raftEnroll / T-55b) — a hook that lands with the daemon
-// join-as-control bring-up, which depends on multi-control mesh addressing.
+// It then enrolls the node in the raft quorum in the background: the leader must
+// NOT add a voter before that node's raft transport is listening (an
+// unreachable voter stalls commits in a 1→2 transition), so enrollControlVoter
+// probes the node's raft address for reachability first. AddVoter is idempotent,
+// so a re-join never double-adds.
 func (s *JoinServer) handoverControl(nodeID, meshIP string, resp *clusterv1.JoinResponse) error {
 	if !s.cfg.MeshEnabled || meshIP == "" || s.cfg.RaftPort == "" {
 		s.log.Warn("control-role join without a mesh; node will run worker-only (control HA needs the mesh)", "node", nodeID)
 		return nil
+	}
+	mem, ok := s.raft.(voter)
+	if !ok {
+		return status.Error(codes.Unavailable, "control-node join is not available on this node")
 	}
 	caKeyPEM, err := s.ca.PrivateKeyPEM()
 	if err != nil {
@@ -182,7 +194,34 @@ func (s *JoinServer) handoverControl(nodeID, meshIP string, resp *clusterv1.Join
 	resp.DataKeyVersion = s.keyring.KeyVersion()
 	resp.CaKeyPem = caKeyPEM
 	resp.RaftBindAddr = net.JoinHostPort(meshIP, s.cfg.RaftPort)
+
+	go enrollControlVoter(mem, s.clock, nodeID, resp.RaftBindAddr, s.log)
 	return nil
+}
+
+// enrollProbeAttempts bounds how long the leader waits for a joining control
+// node's raft transport to come up before giving up on enrolling it.
+const enrollProbeAttempts = 60
+
+// enrollControlVoter waits until the joining control node's raft transport
+// accepts a connection, then idempotently adds it as a voter. Probing first
+// means the leader never adds a voter it cannot yet reach — which in a 1→2
+// growth would stall commits until the node appears.
+func enrollControlVoter(mem voter, clk clock.Clock, nodeID, raftAddr string, log *slog.Logger) {
+	for i := 0; i < enrollProbeAttempts; i++ {
+		conn, err := net.DialTimeout("tcp", raftAddr, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			if aerr := mem.AddVoter(nodeID, raftAddr); aerr != nil {
+				log.Error("enroll control node in raft quorum failed", "node", nodeID, "addr", raftAddr, "err", aerr)
+				return
+			}
+			log.Info("control node enrolled in raft quorum", "node", nodeID, "addr", raftAddr)
+			return
+		}
+		<-clk.After(time.Second)
+	}
+	log.Error("joining control node never became reachable; not enrolling", "node", nodeID, "addr", raftAddr)
 }
 
 // verifyToken matches the presented secret against an unexpired, unused join

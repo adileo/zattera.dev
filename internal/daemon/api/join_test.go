@@ -8,6 +8,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
+	"log/slog"
+	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +27,77 @@ import (
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 )
+
+// recordingVoter records AddVoter calls for the enrollment test.
+type recordingVoter struct {
+	mu    sync.Mutex
+	calls []string // "nodeID@addr"
+}
+
+func (r *recordingVoter) AddVoter(nodeID, addr string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, nodeID+"@"+addr)
+	return nil
+}
+
+func (r *recordingVoter) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
+// TestEnrollControlVoter verifies the leader waits until the joining control
+// node's raft transport is reachable before adding it as a voter — never
+// stranding a voter it cannot reach.
+func TestEnrollControlVoter(t *testing.T) {
+	// Reserve a port but do NOT listen yet: the node's transport is "down".
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	mem := &recordingVoter{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	done := make(chan struct{})
+	go func() {
+		enrollControlVoter(mem, clock.Real{}, "n2", addr, log)
+		close(done)
+	}()
+
+	// While the address is unreachable, no voter is added.
+	time.Sleep(300 * time.Millisecond)
+	if mem.count() != 0 {
+		t.Fatalf("AddVoter called before the node was reachable (%d calls)", mem.count())
+	}
+
+	// Bring the transport up: the probe now succeeds and the node is enrolled.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("enrollment did not complete after the node became reachable")
+	}
+	if mem.count() != 1 || mem.calls[0] != "n2@"+addr {
+		t.Fatalf("expected one AddVoter(n2@%s), got %v", addr, mem.calls)
+	}
+}
 
 func TestJoin(t *testing.T) {
 	t.Run("happy join: token verified, cert signed, mesh IP allocated", func(t *testing.T) {

@@ -9,8 +9,9 @@ something runnable.
 > **T-01 … T-54** (the full M1 milestone, exit gate green in CI), **T-87** and
 > **T-88** (multi-arch), plus **T-89** and **T-90** (production ingress +
 > public API TLS/ACME). Phase 6 (M2) is underway: **T-55** landed the raft HA
-> core (🟡 partial — daemon join-as-control bring-up split out to **T-55b**).
-> Next up: T-55b or T-56.
+> core and **T-55b** wired the daemon join-as-control bring-up (both 🟡 partial —
+> what remains needs real multi-host / cloud-harness verification: multi-hub
+> mesh for control nodes and leadership-reactive device loops). Next up: T-56.
 
 ## What already exists (do not rebuild)
 
@@ -1856,42 +1857,38 @@ mesh disabled): kill leader → new leader elected, API writes keep working
 via leader-forward; remove a follower cleanly.
 **Acceptance:** `go test -tags chaos ./test/chaos/ -run TestHA -timeout 15m`
 
-### T-55b — Daemon join-as-control bring-up
-Phase 6 · Depends: T-55, multi-control mesh addressing · Size: L
-**Why split from T-55:** the raft HA core (transport, membership, handover
-protocol, leaderrunner, removal) landed in T-55 and is unit/chaos-tested
-in-process. The remaining work is the live daemon path for a `--control` join,
-which needs a routable per-control-node mesh IP for the raft transport to bind —
-and today the mesh is single-hub (`meshwiring.go` pins `10.90.0.1`). It also
-needs real multi-host verification (mesh + Docker), i.e. the cloud harness, not
-in-process tests.
-**Files:** `internal/daemon/daemon.go` (extract a shared `runControlPlane` from
-`Run`; add `runJoinedControl`), `internal/daemon/meshwiring.go` (control-node
-mesh IP allocation + control-as-hub), `internal/daemon/api/join.go` (node-
-triggered enrollment), `test/cloud/`.
-**Steps:**
-1. Multi-control mesh: allocate a distinct mesh IP per control node (join flow
-   already reserves low `10.90.0.x` for control) and bring the joined control
-   node's WireGuard up (spoke to existing hubs, then hub for its own peers)
-   before starting raft.
-2. `runJoinedControl`: persist the handover CA cert+key under `<data-dir>/ca/`,
-   build the `Keyring`/`Sealer` from `data_key`, start raft `Bootstrap=false`
-   with `raftstore.NewTLSTransport` bound to `raft_bind_addr`, then run the
-   shared control-plane stack (factor it out of `Run`).
-3. Enrollment without stranding a voter: the joined node signals the leader once
-   its raft transport is listening (a small RPC or a retry the node drives), and
-   the leader calls the idempotent `AddVoter`. Do NOT AddVoter from the Join
-   handler before the node is up (a 1→2 unreachable voter stalls commits).
-4. Leadership-reactive control loops that own devices (mesh hub, ingress) must
-   start/stop on `LeaderCh`, not only at boot — a joined follower that is later
-   elected must bring them up.
+### T-55b — Daemon join-as-control bring-up  🟡 **PARTIAL** (wired; multi-hub mesh + cloud verify remain)
+Phase 6 · Depends: T-55 · Size: L
+**Done:** the daemon path is wired end to end. `runControlPlane` is factored out
+of `Run` and shared by the bootstrap and joined paths. `runJoinedControl`
+(`daemon.go`) brings a `--control` join up as a full member: mesh spoke →
+persist handover CA (`persistHandoverCA`) → `Keyring`/`Sealer` from `data_key` →
+raft `Bootstrap=false` on `raftstore.NewTLSTransport` bound to `raft_bind_addr` →
+wait for enrollment → run the control stack. Enrollment is safe: the leader
+(`api.enrollControlVoter`) probes the joining node's raft address for
+reachability BEFORE the idempotent `AddVoter`, so it never strands an
+unreachable voter. Unit test `TestEnrollControlVoter`; chaos `TestControlJoin`
+(dynamically-joined nodes replicate and one takes over when the bootstrap leader
+is killed).
+**Remaining (needs real multi-host / cloud harness):**
+1. Multi-hub mesh: a joined control node currently comes up as a mesh *spoke* at
+   its own `10.90.0.x` (raft + API work over it), but is not yet a hub workers
+   route through. `meshwiring.go`'s `controlMeshIP` still returns the single hub
+   `10.90.0.1` for the local node — generalize to per-control hub addressing.
+2. Leadership-reactive device loops: `runControlPlane` brings up the mesh hub
+   only at boot when `IsLeader` (`bringUpControlMesh`). A joined follower later
+   elected must bring the hub/ingress up on the `LeaderCh` transition.
+3. Registry self-credential for a joined control+worker node (its agent uses the
+   join-issued reg cred, not the leader-minted `selfRegAuth`).
+**Files:** `internal/daemon/daemon.go`, `internal/daemon/api/join.go` (done);
+`internal/daemon/meshwiring.go` (multi-hub — remaining); `test/cloud/`.
 **Gotchas:** the root CA private key now lives on every control node (chosen
 handover design) — treat it as a cluster secret; a joined follower serves its
 own API cert from the handover CA; `registerLocalNode` is already done by the
-leader's Join handler (don't double-register).
-**Tests:** cloud harness — join a 2nd/3rd control node over a real mesh, kill the
-original leader, assert the cluster keeps serving and a new control node can
-still join; `zattera nodes rm` a control node.
+leader's Join handler (`runControlPlane` does not re-register).
+**Tests (remaining):** cloud harness — join a 2nd/3rd control node over a real
+mesh, kill the original leader, assert the cluster keeps serving and a new
+control node can still join; `zattera nodes rm` a control node.
 
 ### T-56 — memberlist gossip failure detection
 Phase 6 · Depends: T-55, T-19 · Size: M

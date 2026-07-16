@@ -118,14 +118,11 @@ func Run(ctx context.Context, cfg config.Config) error {
 			return err
 		}
 		// A node that joined with the CONTROL role receives the cluster-secret
-		// handover (data key, CA key, raft address) so it can bring up its own
-		// raft + control stack. That bring-up depends on multi-control mesh
-		// addressing, which is not built yet (see meshwiring.go / T-55b): until
-		// it lands, a control-role join runs as a worker. The handover material
-		// is persisted so the follow-up path can consume it without re-joining.
+		// handover (data key, CA key, raft address) and brings up its own raft +
+		// control stack, joining the quorum (T-55b). Requires the mesh (raft
+		// binds the node's mesh IP); without a handover it runs as a worker.
 		if jr.isControl() && jr.handover != nil {
-			log.Warn("joined with the control role, but control-node bring-up is not wired yet (T-55b); running as a worker for now",
-				"node", jr.NodeID, "raft_bind_addr", jr.handover.raftBindAddr)
+			return runJoinedControl(ctx, cfg, jr, log)
 		}
 		return runWorker(ctx, cfg, jr, log)
 	}
@@ -222,6 +219,19 @@ func Run(ctx context.Context, cfg config.Config) error {
 			log.Warn("local node registration failed", "err", err)
 		}
 	}
+
+	return runControlPlane(ctx, cfg, rs, nodeID, authority, sealer, keyring, true, log)
+}
+
+// runControlPlane wires and runs the full control-plane stack — API server,
+// scheduler, orchestrator, ingress, registry, node agent and (when it owns it)
+// the WireGuard mesh hub — and blocks until ctx is canceled or the API server
+// errors. It is shared by the bootstrap control node (Run) and a node that
+// joined with the control role (runJoinedControl). bringUpControlMesh brings up
+// the mesh hub device; a joined control node passes false because it already
+// brought its mesh up as a spoke (see runJoinedControl).
+func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store, nodeID string, authority *ca.CA, sealer secrets.Sealer, keyring *secrets.Keyring, bringUpControlMesh bool, log *slog.Logger) error {
+	st := rs.State()
 
 	// Public API services (T-04 auth, T-05 projects+rbac, T-06 apps) with the
 	// auth → rbac interceptor chain. TODO(T-07): audit interceptor.
@@ -403,8 +413,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 		}, log).Run(ctx)
 
 	// Mesh (T-19): on a mesh-enabled control node, bring WireGuard up as the hub
-	// and keep its own peer set in sync. Single-node/dev disables the mesh.
-	if !cfg.Mesh.Disabled && rs.IsLeader() {
+	// and keep its own peer set in sync. Single-node/dev disables the mesh. A
+	// joined control node passes bringUpControlMesh=false — it is already a mesh
+	// spoke at its own IP (multi-hub mesh for control nodes is a later task).
+	if bringUpControlMesh && !cfg.Mesh.Disabled && rs.IsLeader() {
 		meshMgr, err := startControlMesh(ctx, cfg, rs, authority, nodeID, log)
 		if err != nil {
 			log.Warn("mesh bring-up failed; continuing without mesh", "err", err)
@@ -672,6 +684,100 @@ func localAgentDialer(authority *ca.CA, nodeID, apiListen string, log *slog.Logg
 		}
 		return &agent.Conn{ClientConnInterface: cc, Close: cc.Close}, nil
 	}
+}
+
+// runJoinedControl brings up a node that joined with the control role as a full
+// control-plane member (T-55b): it installs the handed-over cluster CA + data
+// key, joins the raft quorum over the mTLS transport bound to its mesh IP, then
+// runs the shared control stack. The leader enrolls it (AddVoter) once its raft
+// transport is reachable (see api.enrollControlVoter).
+func runJoinedControl(ctx context.Context, cfg config.Config, jr *joinResult, log *slog.Logger) error {
+	h := jr.handover
+	if h == nil || h.raftBindAddr == "" {
+		return fmt.Errorf("daemon: control join without a raft handover (control HA requires the mesh)")
+	}
+
+	// Bring the mesh up first (spoke to the existing hub) so this node's mesh IP
+	// — the raft bind address — is a real local interface before raft binds it.
+	if jr.MeshEnabled {
+		meshMgr, err := startWorkerMesh(ctx, cfg, jr, log)
+		if err != nil {
+			return fmt.Errorf("daemon: joined control mesh: %w", err)
+		}
+		defer func() { _ = meshMgr.Down(context.Background()) }()
+	}
+
+	// Install the handed-over cluster CA (cert + private key) so this node signs
+	// node certs and serves its own API cert like any control node, then load it.
+	if err := persistHandoverCA(cfg.DataDir, jr.caPEM, h.caKeyPEM); err != nil {
+		return err
+	}
+	authority, err := ca.LoadOrCreate(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+
+	// Rebuild the cluster keyring/sealer from the handed-over data key so this
+	// node comes up already unsealed (no recovery passphrase needed).
+	keyring, err := secrets.NewKeyring(h.dataKey, h.dataKeyVersion)
+	if err != nil {
+		return fmt.Errorf("daemon: keyring from handover: %w", err)
+	}
+	sealer, err := keyring.Sealer()
+	if err != nil {
+		return err
+	}
+
+	// Join the raft quorum over the mTLS transport bound to our mesh IP. We start
+	// Bootstrap=false and empty: the leader AddVoters us once it sees our
+	// transport is up, then replicates the log + configuration to us.
+	nodeCert, err := tls.X509KeyPair(jr.certPEM, jr.keyPEM)
+	if err != nil {
+		return fmt.Errorf("daemon: node cert: %w", err)
+	}
+	trans, err := raftstore.NewTLSTransport(h.raftBindAddr, h.raftBindAddr, nodeCert, authority.Pool(), os.Stderr)
+	if err != nil {
+		return err
+	}
+	rs, err := raftstore.New(raftstore.Config{
+		NodeID:    jr.NodeID,
+		DataDir:   filepath.Join(cfg.DataDir, "raft"),
+		Transport: trans,
+		Bootstrap: false,
+		Logger:    log,
+	}, state.New())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rs.Shutdown() }()
+
+	log.Info("joined control node awaiting raft enrollment", "node", jr.NodeID, "raft_addr", h.raftBindAddr)
+	if err := rs.WaitForLeader(ctx); err != nil {
+		return fmt.Errorf("daemon: joined control node never saw a leader (enrollment failed?): %w", err)
+	}
+	log.Info("joined control plane", "node", jr.NodeID)
+
+	return runControlPlane(ctx, cfg, rs, jr.NodeID, authority, sealer, keyring, false, log)
+}
+
+// persistHandoverCA writes the handed-over cluster CA cert + private key to the
+// standard <data-dir>/ca location so ca.LoadOrCreate loads it — a joined control
+// node shares the cluster root (T-55b).
+func persistHandoverCA(dataDir string, caCertPEM, caKeyPEM []byte) error {
+	if len(caCertPEM) == 0 || len(caKeyPEM) == 0 {
+		return fmt.Errorf("daemon: control handover is missing CA material")
+	}
+	caDir := filepath.Join(dataDir, "ca")
+	if err := os.MkdirAll(caDir, 0o700); err != nil {
+		return fmt.Errorf("daemon: ca dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(caDir, "ca.crt"), caCertPEM, 0o600); err != nil {
+		return fmt.Errorf("daemon: write ca.crt: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(caDir, "ca.key"), caKeyPEM, 0o600); err != nil {
+		return fmt.Errorf("daemon: write ca.key: %w", err)
+	}
+	return nil
 }
 
 // runWorker runs a joined node in worker mode: it opens the AgentSync stream to
