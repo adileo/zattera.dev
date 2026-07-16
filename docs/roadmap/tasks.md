@@ -8,12 +8,13 @@ something runnable.
 > **Status:** tasks marked ✅ **DONE** are complete. This currently covers
 > **T-01 … T-54** (the full M1 milestone, exit gate green in CI), **T-87** and
 > **T-88** (multi-arch), plus **T-89** and **T-90** (production ingress +
-> public API TLS/ACME). Phase 6 (M2) is underway: **T-55** landed the raft HA
-> core, **T-55b** wired the daemon join-as-control bring-up, and **T-56** added
-> gossip failure detection with a real-cluster HA test
-> (`test/cloud/ha_test.go`). Remaining T-55b polish (control mesh-hub for
-> workers, leadership-reactive device loops) is verifiable via that cloud test.
-> Next up: T-57 (meshsock) or T-59 (metrics).
+> public API TLS/ACME). Phase 6 (M2) is underway: **T-55** (raft HA core),
+> **T-55b** (daemon join-as-control), and **T-56** (gossip failure detection)
+> are done and **verified GREEN on a real 3-node Hetzner cluster**
+> (`test/cloud/ha_test.go`: quorum forms, leader-kill failover, dead node DOWN
+> in ~19s). Remaining T-55b polish (control mesh-hub for workers,
+> leadership-reactive device loops) is optional. Next up: T-57 (meshsock) or
+> T-59 (metrics).
 
 ## What already exists (do not rebuild)
 
@@ -1902,13 +1903,23 @@ import api). `LivenessMonitor.WithGossip` feeds the snapshot into the same
 SetNodeStatus path — gossip accelerates DOWN and holds a node ALIVE past the
 heartbeat deadline; gossip-confirmed death bypasses the post-election grace
 window; with no gossip attached the behaviour is byte-identical to before.
-**Real-cluster verification (T-55 + T-56):** `test/cloud/ha_test.go`
-`TestControlHAAndGossip` — 3-control quorum, kill a follower and assert DOWN
-inside the gossip window (<30s), then kill the leader and assert the survivors
-re-elect and keep serving. Two addressing fixes landed with it so multi-control
-leader-forward works over the mesh: `serverIPs` now uses the node's ACTUAL mesh
-IP (cert SAN), and `leaderAPIResolver` forwards to the leader's mesh IP (a SAN,
-and every control node peers with it directly).
+**Real-cluster verification (T-55 + T-56): GREEN on Hetzner.**
+`test/cloud/ha_test.go` `TestControlHAAndGossip` — a real 3-control quorum forms
+and all nodes reach ALIVE (T-55), then killing the bootstrap leader the two
+survivors re-elect and keep serving writes (T-55 HA) while the dead leader is
+marked DOWN in ~19s — inside the new leader's post-election grace, which only
+gossip bypasses (T-56). Getting there took several real-cluster fixes beyond the
+in-process work:
+  - bootstrap node runs raft over the **mTLS transport on its mesh IP** (was
+    plain TCP on loopback → a joined node's mTLS listener EOF'd its dials);
+  - a joining CONTROL node gets **/32 direct peers** to each control node (was
+    given overlapping `/16` hub routes, which WireGuard can't program → the 3rd
+    control node was unreachable);
+  - `memberlist.Join` **retries** until a peer is reached (was one-shot → a
+    node whose tunnel wasn't up yet stayed invisible to the leader's gossip);
+  - `serverIPs` uses the node's ACTUAL mesh IP (cert SAN) and
+    `leaderAPIResolver` forwards to the leader's mesh IP, so multi-control
+    leader-forward verifies + routes over the mesh.
 **Files:** `internal/daemon/mesh/gossip.go`, `gossip_test.go`
 **Steps:**
 1. `hashicorp/memberlist` over the mesh (bind mesh IP :7946, LAN config with
