@@ -141,22 +141,21 @@ func (c *Cluster) APIFor(n *Node) *apiclient.Client {
 	return cli
 }
 
-// JoinMeshsockWorkerNAT brings up a worker with NO public IPv4, behind
-// `gateway`'s NAT, on the meshsock datapath (T-57/T-58). Two such workers can
-// only reach each other through the control relay — no direct/punched path.
-func (c *Cluster) JoinMeshsockWorkerNAT(gateway *Node, arch string) *Node {
+// JoinMeshsockWorker brings up a public worker on the meshsock datapath
+// (T-57/T-58) and waits until it registers.
+func (c *Cluster) JoinMeshsockWorker(arch string) *Node {
 	c.T.Helper()
 	if c.control == nil {
-		c.T.Fatal("cloud: JoinMeshsockWorkerNAT requires StartControl first")
+		c.T.Fatal("cloud: JoinMeshsockWorker requires StartControl first")
 	}
 	token := c.workerJoinToken()
-	n := c.SimulateNATNoPublicIP(gateway, arch)
+	n := c.CreateNode(NodeSpec{Role: "worker", Arch: arch})
 	n.InstallDocker()
 	n.InstallBinary()
 	n.WriteMeshsockWorkerConfig(c.control.PublicIPv4(), token)
 	n.StartService()
 	c.WaitNodeRegistered(n.Name())
-	c.T.Logf("cloud: NAT'd meshsock worker %s (%s) joined", n.Name(), arch)
+	c.T.Logf("cloud: meshsock worker %s (%s) joined", n.Name(), arch)
 	return n
 }
 

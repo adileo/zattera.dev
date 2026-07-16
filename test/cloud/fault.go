@@ -100,6 +100,15 @@ iptables -C OUTPUT -p udp --dport 51820 -j DROP 2>/dev/null || iptables -A OUTPU
 	n.c.T.Cleanup(func() { n.UnblockMeshUDP() })
 }
 
+// BlockMeshUDPTo drops WireGuard UDP to/from a specific peer IP only, leaving
+// this node's mesh path to the control hub intact. Used to force meshsock off a
+// direct/punched worker↔worker path and onto the TCP relay (T-58).
+func (n *Node) BlockMeshUDPTo(peerIP string) {
+	n.c.T.Helper()
+	n.MustRun(fmt.Sprintf(`iptables -A INPUT  -p udp --dport 51820 -s %[1]s -j DROP
+iptables -A OUTPUT -p udp --dport 51820 -d %[1]s -j DROP`, peerIP))
+}
+
 // UnblockMeshUDP removes the mesh-UDP drop rules.
 func (n *Node) UnblockMeshUDP() {
 	_, _ = n.Run(`iptables -D INPUT -p udp --dport 51820 -j DROP 2>/dev/null || true
