@@ -1936,8 +1936,24 @@ BOTH gossip-dead AND heartbeat-stale >10s, alive needs either fresh).
 **Tests:** unit — event→status mapping with a fake memberlist; flap guard.
 **Acceptance:** `go test ./internal/daemon/mesh/ -run TestGossip`
 
-### T-57 — meshsock: custom bind + UDP hole punching (Phase C)
+### T-57 — meshsock: custom bind + UDP hole punching (Phase C)  ✅ **DONE** (real-infra punch → T-57b)
 Phase 6 · Depends: T-20 · Size: XL (split if needed)
+**Landed:** `internal/daemon/mesh/meshsock/` — a wireguard-go `conn.Bind`
+multiplexing WG packets + `0xff`-prefixed HMAC-signed disco frames on one UDP
+socket; a per-peer path state machine (home → direct → punched → relay) with
+managed per-peer singleton endpoints swapped by an atomic pointer (magicsock
+model); control-coordinated simultaneous-open via `MeshService.PunchStream` +
+`RequestPunch` (T-18 additive RPCs). Wired into `DeviceManager` (bind + peer
+feeding + `nodeID@` endpoints) and the daemon (worker punch client + peer-builder
+meshsock pairing). Tests: frame discrimination, path transitions over a
+programmable NAT sim (full-cone punch, symmetric→relay, loss→home), and a REAL
+wireguard-go tunnel over a hole-punched path. Acceptance
+`go test ./internal/daemon/mesh/meshsock/` green.
+**Remaining (T-57b):** real-infra hole punching needs each node's reflexive
+WG-port endpoint advertised to control (fold the hub's observed per-peer WG
+endpoints, or run disco over the meshsock socket). Without it, real NAT'd nodes
+fall back to the relay (T-58), which is what `test/cloud/TestMeshsockRelay`
+verifies.
 **Files:** `internal/daemon/mesh/meshsock/{bind.go,disco.go,path.go}`,
 tests alongside
 **Steps:**
@@ -1966,7 +1982,33 @@ and symmetric); integration — two wireguard-go instances with meshsock over
 loopback "NAT" simulator, tunnel ping.
 **Acceptance:** `go test ./internal/daemon/mesh/meshsock/`
 
-### T-58 — TCP relay, DERP-lite (Phase D)
+### T-58 — TCP relay, DERP-lite (Phase D)  ✅ **DONE**
+Phase 6 · Depends: T-57 · Size: L
+**Landed:** `internal/daemon/mesh/relay/` — an mTLS TCP relay every control node
+runs on `:7443` (node-cert auth via URI SAN; frames
+`[dstNode(26)][len(u16)][payload]` capped at 2048; per-conn drop-oldest write
+queues). meshsock's `relayEndpoint` send path activates after ~10s with no UDP
+path; the relay client (fastest-connect + reconnect backoff) injects received
+packets into the bind's recv queue. The relay never sees plaintext. Tests:
+frame routing between fake clients, drop-on-absent-dst, backpressure drop, and a
+REAL wireguard-go tunnel over the relay. Acceptance
+`go test ./internal/daemon/mesh/relay/` green. Real-infra check:
+`test/cloud/ha_test.go`… `TestMeshsockRelay` (two NAT'd meshsock workers reach
+each other only via the relay).
+
+### T-57b — meshsock reflexive-endpoint discovery + real-infra punch
+Phase 6 · Depends: T-57 · Size: M
+**Why:** hole punching needs each node's reflexive endpoint on its WG/meshsock
+source port. Options: (a) the control hub reads its WireGuard device's observed
+per-peer endpoint (the worker's NAT-mapped WG addr) and folds it into the
+punch-endpoint set; or (b) run the disco echo (T-20) over the meshsock socket so
+the reflexive mapping matches the WG port. Then `RequestPunch` returns real
+endpoints and NAT'd meshsock workers get a direct punched path instead of the
+relay. **Test:** cloud — two full-cone-NAT'd meshsock workers establish a
+punched worker↔worker path (assert `direct`/`punched`, not `relay`); block UDP →
+verify relay fallback.
+
+**old T-58 spec (for reference):**
 Phase 6 · Depends: T-57 · Size: L
 **Files:** `internal/daemon/mesh/relay/{server.go,client.go}`, tests
 **Steps:**

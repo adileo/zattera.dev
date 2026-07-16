@@ -141,6 +141,25 @@ func (c *Cluster) APIFor(n *Node) *apiclient.Client {
 	return cli
 }
 
+// JoinMeshsockWorkerNAT brings up a worker with NO public IPv4, behind
+// `gateway`'s NAT, on the meshsock datapath (T-57/T-58). Two such workers can
+// only reach each other through the control relay — no direct/punched path.
+func (c *Cluster) JoinMeshsockWorkerNAT(gateway *Node, arch string) *Node {
+	c.T.Helper()
+	if c.control == nil {
+		c.T.Fatal("cloud: JoinMeshsockWorkerNAT requires StartControl first")
+	}
+	token := c.workerJoinToken()
+	n := c.SimulateNATNoPublicIP(gateway, arch)
+	n.InstallDocker()
+	n.InstallBinary()
+	n.WriteMeshsockWorkerConfig(c.control.PublicIPv4(), token)
+	n.StartService()
+	c.WaitNodeRegistered(n.Name())
+	c.T.Logf("cloud: NAT'd meshsock worker %s (%s) joined", n.Name(), arch)
+	return n
+}
+
 // API returns an authenticated API client for the control node (memoized),
 // using the bootstrap admin token. Verification is skipped (test cluster,
 // self-signed until ACME) — the token authenticates.

@@ -338,11 +338,25 @@ disabled = true
 }
 
 func (n *Node) WriteWorkerConfig(controlIP, token string) {
+	n.writeWorkerConfig(controlIP, token, "")
+}
+
+// WriteMeshsockWorkerConfig writes a worker config on the meshsock datapath
+// (UDP hole punching + relay) — used for NAT'd worker↔worker tests.
+func (n *Node) WriteMeshsockWorkerConfig(controlIP, token string) {
+	n.writeWorkerConfig(controlIP, token, "meshsock")
+}
+
+func (n *Node) writeWorkerConfig(controlIP, token, mode string) {
 	// Mesh endpoint: a NAT node has no public IPv4 — advertise nothing and let
-	// disco/hole-punching (or the private IP) handle it.
+	// disco/hole-punching (or the relay) handle it.
 	meshEndpoint := ""
 	if n.machine.PublicIPv4 != "" {
 		meshEndpoint = fmt.Sprintf("\npublic_endpoints = [\"%s:51820\"]", n.machine.PublicIPv4)
+	}
+	modeLine := ""
+	if mode != "" {
+		modeLine = fmt.Sprintf("\nmode             = %q", mode)
 	}
 	cfg := fmt.Sprintf(`node_name = %q
 data_dir  = "/var/lib/zattera"
@@ -353,8 +367,8 @@ addr  = "%s:8443"
 token = %q
 
 [mesh]
-listen_port      = 51820%s
-`, n.spec.Name, controlIP, token, meshEndpoint)
+listen_port      = 51820%s%s
+`, n.spec.Name, controlIP, token, meshEndpoint, modeLine)
 	n.Push([]byte(cfg), "/etc/zattera/config.toml", "0644")
 }
 
