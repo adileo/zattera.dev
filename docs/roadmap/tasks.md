@@ -15,7 +15,9 @@ something runnable.
 > in ~19s). **T-55c** (multi-hub mesh + hub/control failover) completes HA: every
 > control node is a WireGuard hub, a worker's whole-mesh route fails over between
 > hubs, and workers roll their control-plane connection onto a surviving control
-> node (`test/cloud/multihub_test.go`). **T-57/T-57c** (meshsock),
+> node (`test/cloud/multihub_test.go`). **T-55d** makes a follower control+worker's
+> own agent stream to the leader so workloads on control nodes stay visible to the
+> scheduler (`test/cloud/controlworkload_test.go`). **T-57/T-57c** (meshsock),
 > **T-59/T-60** (ring TSDB metrics sampler + historical stats API/CLI),
 > **T-61** (CPU/mem/RPS autoscaler), **T-62** (node-pinned volumes + fencing
 > leases), **T-63** (stateful stop-then-start deploys), **T-64** (content-
@@ -1974,23 +1976,36 @@ tracking). Chaos `TestHA`/`TestControlJoin` still green.
 join-control node at once); assert the quorum still serves writes, the node is
 marked DOWN, and worker↔worker traffic RECOVERS through a surviving hub.
 
-### T-55d — Follower control+worker agent → leader  ⬜ **OPEN**
+### T-55d — Follower control+worker agent → leader  ✅ **DONE**
 Phase 6 · Depends: T-55c · Size: M
-Surfaced during T-55c. A control node that also carries the worker role runs its
+Surfaced during T-55c: a control node that also carries the worker role ran its
 own node agent over loopback (`localAgentDialer`) to its OWN API. On a FOLLOWER
-that API is not the leader, and `applyAnywhere` drops agent commands on a
-follower — so a follower control+worker's observed assignment state and resource
-samples never reach the LEADER's (leader-memory) livestate. Node *liveness* is
-fine (gossip keeps control nodes ALIVE), but the scheduler/orchestrator on the
-leader can't see what's actually running on a follower control+worker, so
-deploying workloads onto follower control nodes is not yet correct. Pure workers
-already target the leader (T-55c `controlEndpoints.pickLeader`); the equivalent
-is needed for a co-located control node's own agent — either dial the leader (a
-control node can resolve it via `LeaderAddr`) or land follower→leader command
-forwarding for AgentSync. Not exercised by any test yet (the cloud HA tests run
-no workloads on the control nodes). **Files:** `internal/daemon/daemon.go`
-(`localAgentDialer` / the control node's own agent wiring),
-`internal/daemon/api/agentsync.go` (`applyAnywhere`).
+that API is not the leader, `applyAnywhere` drops agent commands on a follower and
+livestate is leader-memory — so a follower control+worker's observed state never
+reached the leader, and workloads scheduled onto it never reported healthy (the
+deploy orchestrator would stall). Verified GREEN on a real 3× control+worker
+Hetzner cluster (`test/cloud/controlworkload_test.go`: deploy a 3-replica app,
+assert a healthy replica lands on a FOLLOWER control node).
+**Done:**
+1. **Client dials the leader.** `controlAgentDialer` (`daemon.go`) replaces
+   `localAgentDialer` for a control node's own agent: loopback when leader, else
+   the leader's mesh-IP API (`leaderAPIResolver`); re-resolves on every reconnect
+   and carries the T-55c keepalive. An election (leader unknown) returns an error
+   so it retries rather than dialing a follower.
+2. **Server drops non-leader streams.** `SyncServer.Sync` rejects at open and in
+   the recv loop when `notLeader()` (`agentsync.go`, nil applier = leader for
+   tests). This sheds streams from a leader demoted-but-alive (a re-election that
+   client keepalive can't catch since the connection is still live) so they
+   reconnect to the new leader — also hardens pure-worker failover (T-55c).
+3. **Container host IP fix.** The cloud test exposed a second bug: `agentHostIP`
+   returned the constant `10.90.0.1` for EVERY control node, so a joined control
+   node bound container ports (and advertised its control gRPC + build source) to
+   the bootstrap's IP → "cannot assign requested address". `runControlPlane` now
+   uses the node's OWN mesh IP (`hostIP = meshIP`).
+**Files:** `internal/daemon/daemon.go` (`controlAgentDialer`, `hostIP`),
+`internal/daemon/api/agentsync.go` (`notLeader` guard),
+`internal/daemon/api/agentsync_test.go`, `test/cloud/controlworkload_test.go`.
+**Acceptance (cloud):** `go test -tags cloud ./test/cloud/ -run TestControlNodeWorkloads`.
 
 ### T-56 — memberlist gossip failure detection  ✅ **DONE**
 Phase 6 · Depends: T-55, T-19 · Size: M

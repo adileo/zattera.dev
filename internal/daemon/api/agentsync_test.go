@@ -1,14 +1,40 @@
 package api
 
 import (
+	"context"
 	"testing"
 
+	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/daemon/livestate"
 	"github.com/zattera-dev/zattera/internal/daemon/secrets"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/state"
 )
+
+// leaderToggleApplier is an Applier whose leadership is configurable.
+type leaderToggleApplier struct{ leader bool }
+
+func (a leaderToggleApplier) Apply(context.Context, *clusterv1.Command) error { return nil }
+func (a leaderToggleApplier) IsLeader() bool                                  { return a.leader }
+
+// TestSyncServerNotLeader covers the T-55d guard: an agent stream is only served
+// by the leader (livestate is leader-memory), and a nil applier (tests/single
+// node) is treated as the leader.
+func TestSyncServerNotLeader(t *testing.T) {
+	mk := func(a Applier) *SyncServer {
+		return NewSyncServer(state.New(), a, livestate.New(clock.NewFake()), clock.NewFake(), nil, nil)
+	}
+	if mk(nil).notLeader() {
+		t.Fatal("nil applier must be treated as the leader")
+	}
+	if !mk(leaderToggleApplier{leader: false}).notLeader() {
+		t.Fatal("a follower must reject agent streams")
+	}
+	if mk(leaderToggleApplier{leader: true}).notLeader() {
+		t.Fatal("the leader must serve agent streams")
+	}
+}
 
 // TestSyncServerRuntimePayload verifies that the control side resolves an
 // assignment's release into an image + frozen spec and decrypts the

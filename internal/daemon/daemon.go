@@ -29,7 +29,6 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
@@ -269,6 +268,17 @@ func Run(ctx context.Context, cfg config.Config) error {
 func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store, nodeID, meshIP string, authority *ca.CA, sealer secrets.Sealer, keyring *secrets.Keyring, controlMesh *mesh.DeviceManager, joinRegAuth *crt.RegistryAuth, log *slog.Logger) error {
 	st := rs.State()
 
+	// hostIP is THIS node's address for publishing container ports, advertising
+	// its control gRPC endpoint, and serving build source — its OWN mesh IP
+	// (bootstrap 10.90.0.1, a joined control node its own 10.90.0.x), or loopback
+	// when the mesh is disabled. agentHostIP's constant was only correct for the
+	// bootstrap, so a joined control node bound container ports to 10.90.0.1 and
+	// they failed with "cannot assign requested address" (T-55d).
+	hostIP := meshIP
+	if hostIP == "" {
+		hostIP = "127.0.0.1"
+	}
+
 	// Public API services (T-04 auth, T-05 projects+rbac, T-06 apps) with the
 	// auth → rbac interceptor chain. TODO(T-07): audit interceptor.
 	clk := clock.Real{}
@@ -304,7 +314,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 	}
 	joinSrv := api.NewJoinServer(st, rs, clk, authority, keyring, api.JoinConfig{
 		MeshEnabled:     !cfg.Mesh.Disabled,
-		ControlGRPCAddr: net.JoinHostPort(agentHostIP(cfg), apiPort),
+		ControlGRPCAddr: net.JoinHostPort(hostIP, apiPort),
 		RegistryAddr:    registryClientAddr(cfg),
 		RaftPort:        raftPort,
 	}, log)
@@ -538,7 +548,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 	go scheduler.NewBuildDispatcher(rs, clk,
 		scheduler.GRPCBuildDialer{Connect: agentLocalConnect},
 		scheduler.BuildDispatcherConfig{
-			SourceURLBase: "https://" + net.JoinHostPort(agentHostIP(cfg), apiPortStr) + "/internal/blobs/",
+			SourceURLBase: "https://" + net.JoinHostPort(hostIP, apiPortStr) + "/internal/blobs/",
 			RegistryAddr:  registryClientAddr(cfg),
 			LocalLoad:     cfg.Dev,
 		}, log).Run(ctx)
@@ -625,9 +635,9 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 			Logger:       log,
 			DiskPath:     cfg.DataDir,
 			Runtime:      rt,
-			HostIP:       agentHostIP(cfg),
+			HostIP:       hostIP,
 			RegistryAuth: selfRegAuth,
-			Dial:         localAgentDialer(authority, nodeID, cfg.API.Listen, log),
+			Dial:         controlAgentDialer(leaderResolve, authority, nodeID, cfg.API.Listen),
 			Store:        metricsStore,
 			ProxyStats: func() map[string]*clusterv1.ProxySample {
 				if s := proxyStats.Load(); s != nil {
@@ -805,34 +815,35 @@ func leaderDialOpts(authority *ca.CA) []grpc.DialOption {
 	return []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 }
 
-// localAgentDialer returns a Dial for the node's own agent to reach the local
-// control API over loopback. It presents a self-issued node identity cert so
-// the AgentSync method (mTLS, node-tier) accepts the stream. In a multi-node
-// mesh the join flow (T-17) provisions the node cert and the control address;
-// this loopback path covers single-node/dev and a control node's own worker.
-func localAgentDialer(authority *ca.CA, nodeID, apiListen string, log *slog.Logger) func(context.Context) (*agent.Conn, error) {
+// controlAgentDialer returns a Dial for a control node's own node agent that
+// targets the CURRENT leader: loopback when this node is the leader, else the
+// leader's mesh-IP API. The AgentSync livestate (heartbeats) is leader-memory and
+// observed state is leader-applied, so a FOLLOWER control+worker's own agent must
+// stream to the leader or its containers stay invisible to the scheduler (T-55d).
+// resolve returns "" when we are the leader and an error while the leader is
+// unknown (an election) — then we retry rather than dial a follower. It
+// re-resolves on every reconnect and carries the same keepalive as worker control
+// dials; the server drops the stream if this node stops being the leader
+// (SyncServer leader check), which is what forces the reconnect after a handover.
+func controlAgentDialer(resolve func() (string, error), authority *ca.CA, nodeID, apiListen string) func(context.Context) (*agent.Conn, error) {
 	_, port, err := net.SplitHostPort(apiListen)
 	if err != nil || port == "" {
 		port = "8443"
 	}
-	addr := net.JoinHostPort("127.0.0.1", port)
-
-	// Issue the node cert once; the agent reuses it across reconnects.
-	var dialOpt grpc.DialOption
-	if leaf, err := authority.IssueNode(nodeID, nil, ca.NodeCertTTL); err != nil {
-		log.Warn("agent: issue node cert failed", "err", err)
-		dialOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else if tlsCert, err := leaf.TLSCertificate(authority.CABundlePEM()); err != nil {
-		log.Warn("agent: build node tls cert failed", "err", err)
-		dialOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		tlsCfg := authority.ClientTLSConfig(tlsCert)
-		tlsCfg.ServerName = "127.0.0.1"
-		dialOpt = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
-	}
-
 	return func(context.Context) (*agent.Conn, error) {
-		cc, err := grpc.NewClient(addr, dialOpt)
+		addr, rerr := resolve()
+		if rerr != nil {
+			return nil, rerr // leader unknown (election in progress) — back off and retry
+		}
+		host, target := "127.0.0.1", net.JoinHostPort("127.0.0.1", port)
+		if addr != "" { // follower: dial the leader's API over the mesh
+			target = addr
+			if h, _, e := net.SplitHostPort(addr); e == nil {
+				host = h
+			}
+		}
+		creds := credentials.NewTLS(nodeClientTLS(authority, nodeID, host))
+		cc, err := grpc.NewClient(target, controlDialOpts(creds)...)
 		if err != nil {
 			return nil, err
 		}

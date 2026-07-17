@@ -53,6 +53,17 @@ type SyncServer struct {
 	statusFlush        time.Duration
 }
 
+// errNotLeaderStream tells an agent its stream landed on a non-leader; the agent
+// reconnects and re-targets the leader (T-55d).
+var errNotLeaderStream = status.Error(codes.Unavailable, "not the leader; reconnect to the leader")
+
+// notLeader reports whether this node is currently not the raft leader. A nil
+// applier (unit-test SyncServers and single-node fakes) has no leadership concept
+// and is treated as the leader.
+func (s *SyncServer) notLeader() bool {
+	return s.applier != nil && !s.applier.IsLeader()
+}
+
 // NewSyncServer builds the control-side AgentSync handler. applier commits
 // status batches (SetAssignmentsObserved) through raft; sealer decrypts env
 // vars pushed to agents (may be nil).
@@ -92,6 +103,15 @@ func (s *SyncServer) Sync(stream clusterv1.AgentSyncService_SyncServer) error {
 	nodeID, err := s.resolveNodeID(ctx, hello)
 	if err != nil {
 		return err
+	}
+
+	// Only the leader may serve an agent stream: livestate (heartbeats) is
+	// leader-memory and observed state is leader-applied, so a stream on a
+	// follower would silently drop everything and the node's containers would be
+	// invisible to the scheduler. Reject up front so the agent reconnects to the
+	// leader; recvLoop re-checks so a demoted leader also sheds its streams (T-55d).
+	if s.notLeader() {
+		return errNotLeaderStream
 	}
 
 	release := s.live.Connect(nodeID)
@@ -136,6 +156,12 @@ func (s *SyncServer) recvLoop(stream clusterv1.AgentSyncService_SyncServer, node
 				return nil
 			}
 			return err
+		}
+		// A leader demoted mid-stream (a re-election while it stayed alive) must
+		// shed its agent streams so they reconnect to the new leader — client
+		// keepalive can't catch this because the connection is still live (T-55d).
+		if s.notLeader() {
+			return errNotLeaderStream
 		}
 		switch b := msg.Body.(type) {
 		case *clusterv1.AgentMessage_Heartbeat:
