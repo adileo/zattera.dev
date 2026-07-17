@@ -15,8 +15,9 @@ something runnable.
 > in ~19s). Remaining T-55b polish (control mesh-hub for workers,
 > leadership-reactive device loops) is optional. **T-57/T-57c** (meshsock),
 > **T-59/T-60** (ring TSDB metrics sampler + historical stats API/CLI),
-> **T-61** (CPU/mem/RPS autoscaler) and **T-62** (node-pinned volumes + fencing
-> leases) are done. Next up: T-63 (stateful stop-then-start deploys).
+> **T-61** (CPU/mem/RPS autoscaler), **T-62** (node-pinned volumes + fencing
+> leases) and **T-63** (stateful stop-then-start deploys) are done. Next up:
+> T-64 (snapshot engine).
 
 ## What already exists (do not rebuild)
 
@@ -2266,8 +2267,30 @@ scenario).
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestVolumeLease`;
 chaos suite extension green.
 
-### T-63 — Stateful deploy semantics (stop-then-start)
+### T-63 — Stateful deploy semantics (stop-then-start)  ✅ **DONE**
 Phase 6 · Depends: T-62, T-26 · Size: M
+**Landed:** `internal/daemon/scheduler/stateful.go` — the orchestrator delegates
+stateful releases (previously aborted) to `reconcileStateful`, a stop-then-start
+machine: `PENDING → [BUILDING] → STOPPING_OLD → STARTING → HEALTHCHECKING →
+PROMOTING → SUCCEEDED`. `stopOld` flips the outgoing instance to STOP and waits
+until its container is actually gone (`stillRunning` on observed state) — the
+single-writer barrier — before `statefulStart` places exactly one new instance on
+the volume's pinned node (`Place` pins it; on a first deploy, with no active
+release yet, `ensureDeployVolumes` creates the volume on the chosen node first).
+`statefulPromote` switches the active release with no drain window (the old
+instance is already stopped). Any failure after the old instance stopped —
+start failure, unhealthy, or health-deadline timeout — runs `statefulFail`:
+reap the new instance, flip the old one back to RUN (best effort), FAILED.
+`DEPLOYMENT_PHASE_STOPPING_OLD = 12` added additively (regen); `checkBuild` and
+`emitEvent` generalized (next-phase / severity). Maintenance downtime is bracketed
+by `deploy.maintenance_start`/`deploy.maintenance_end` events.
+**Tests:** `TestStateful` — full stop-then-start walk with a continuous
+never-two-RUN assertion after every step, first-deploy volume auto-create,
+failure-after-stop restart-old path, and health-timeout restart path; the
+red/green `TestDeployment` "stateful releases" case updated to expect the new
+STOPPING_OLD route.
+**Acceptance:** `go test ./internal/daemon/scheduler/ -run TestStateful` ✅
+**Original spec below.**
 **Files:** `internal/daemon/scheduler/stateful.go`, `stateful_test.go`
 **Steps:**
 1. Deployment orchestrator branch for `stateful: true`: phases

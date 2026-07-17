@@ -181,15 +181,15 @@ func TestDeployment(t *testing.T) {
 		}
 	})
 
-	t.Run("stateful releases are rejected", func(t *testing.T) {
+	t.Run("stateful releases use stop-then-start, not red/green", func(t *testing.T) {
 		o, rs, _ := newDeployRig(t)
 		st := rs.State()
 		rel, _ := st.Release(greenRel)
 		rel.GetService().Stateful = true
 		st.PutRelease(rel)
 
-		step(t, o, depID)
-		phaseIs(t, st, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_FAILED)
+		step(t, o, depID) // PENDING → STOPPING_OLD (stateful path, T-63)
+		phaseIs(t, st, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_STOPPING_OLD)
 	})
 }
 

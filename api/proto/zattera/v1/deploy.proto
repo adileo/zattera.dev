@@ -48,6 +48,7 @@ enum DeploymentPhase {
   DEPLOYMENT_PHASE_FAILED = 9;        // traffic never moved
   DEPLOYMENT_PHASE_ROLLED_BACK = 10;
   DEPLOYMENT_PHASE_SUPERSEDED = 11;   // a newer deployment for the same env appeared
+  DEPLOYMENT_PHASE_STOPPING_OLD = 12; // stateful stop-then-start: old instance stopping before the new one starts (T-63)
 }
 
 // Deployment tracks one rollout of a Release (spec §4, §3.7).

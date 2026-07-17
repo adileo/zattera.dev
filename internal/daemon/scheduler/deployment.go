@@ -135,11 +135,13 @@ func (o *Orchestrator) reconcile(ctx context.Context, d *zatterav1.Deployment) e
 		return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_SUPERSEDED, "superseded by a newer deployment")
 	}
 
+	// Stateful services use stop-then-start (T-63), not red/green.
+	if rel.GetService().GetStateful() {
+		return o.reconcileStateful(ctx, st, env, rel, d)
+	}
+
 	switch d.GetPhase() {
 	case zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PENDING:
-		if rel.GetService().GetStateful() {
-			return o.abort(ctx, d, "stateful services use stop-then-start deploys (T-63), not red/green")
-		}
 		// Source deploys carry a build_id: build the image before placing.
 		if d.GetBuildId() != "" && rel.GetImageRef() == "" {
 			return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_BUILDING, "")
@@ -153,7 +155,7 @@ func (o *Orchestrator) reconcile(ctx context.Context, d *zatterav1.Deployment) e
 		return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PLACING, "")
 
 	case zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_BUILDING:
-		return o.checkBuild(ctx, rel, d)
+		return o.checkBuild(ctx, rel, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PLACING)
 
 	case zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PLACING:
 		return o.place(ctx, st, env, rel, d)
@@ -175,8 +177,9 @@ func (o *Orchestrator) reconcile(ctx context.Context, d *zatterav1.Deployment) e
 
 // checkBuild gates a source deployment on its build: it stays in BUILDING until
 // the build succeeds (then it stamps the built image onto the release and
-// advances to PLACING) or fails (then the deployment fails).
-func (o *Orchestrator) checkBuild(ctx context.Context, rel *zatterav1.Release, d *zatterav1.Deployment) error {
+// advances to next) or fails (then the deployment fails). next is PLACING for
+// red/green and STOPPING_OLD for stateful.
+func (o *Orchestrator) checkBuild(ctx context.Context, rel *zatterav1.Release, d *zatterav1.Deployment, next zatterav1.DeploymentPhase) error {
 	b, ok := o.store.State().Build(d.GetBuildId())
 	if !ok {
 		return o.abort(ctx, d, "build not found")
@@ -195,7 +198,7 @@ func (o *Orchestrator) checkBuild(ctx context.Context, rel *zatterav1.Release, d
 				return err
 			}
 		}
-		return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_PLACING, "")
+		return o.setPhase(ctx, d, next, "")
 	case zatterav1.BuildStatus_BUILD_STATUS_FAILED, zatterav1.BuildStatus_BUILD_STATUS_CANCELED:
 		return o.abort(ctx, d, "build failed: "+b.GetError())
 	default:
@@ -317,7 +320,7 @@ func (o *Orchestrator) abort(ctx context.Context, d *zatterav1.Deployment, reaso
 	if err := o.reapGreen(ctx, o.store.State(), d); err != nil {
 		return err
 	}
-	o.emitEvent(ctx, d, "deploy.failed", reason)
+	o.emitEvent(ctx, d, "deploy.failed", "error", reason)
 	return o.setPhase(ctx, d, zatterav1.DeploymentPhase_DEPLOYMENT_PHASE_FAILED, reason)
 }
 
@@ -374,11 +377,11 @@ func (o *Orchestrator) setPhase(ctx context.Context, d *zatterav1.Deployment, ph
 	}}})
 }
 
-func (o *Orchestrator) emitEvent(ctx context.Context, d *zatterav1.Deployment, kind, msg string) {
+func (o *Orchestrator) emitEvent(ctx context.Context, d *zatterav1.Deployment, kind, severity, msg string) {
 	_ = o.apply(ctx, &clusterv1.Command{Mutation: &clusterv1.Command_AppendEvents{AppendEvents: &clusterv1.AppendEvents{Events: []*zatterav1.Event{{
 		Meta:          &zatterav1.Meta{Id: ids.New(), CreatedAt: timestamppb.Now()},
 		Kind:          kind,
-		Severity:      "error",
+		Severity:      severity,
 		ProjectId:     d.GetProjectId(),
 		AppId:         d.GetAppId(),
 		EnvironmentId: d.GetEnvironmentId(),

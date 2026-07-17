@@ -57,10 +57,28 @@ corrupt the data. Two mechanisms guarantee it (spec §9.1):
   isolated node's lease can't be renewed, so no other node can acquire one until
   it expires — closing any double-run window.
 
+## Deploys are stop-then-start
+
+Because a volume has a single writer, stateful services can't do a red/green
+deploy (two instances live at once). Instead they **stop the old instance, then
+start the new one** on the same node and volume:
+
+```
+stopping-old → starting → healthchecking → promoting → succeeded
+```
+
+There is a **brief maintenance downtime** between stopping the old instance and
+the new one passing its health check — expected and surfaced as
+`deploy.maintenance_start` / `deploy.maintenance_end` events. If the new instance
+fails to start or never becomes healthy, Zattera **restarts the old one**
+(best effort) and marks the deploy failed, so you're never left with nothing
+running.
+
 ## Under the hood
 
 `VolumeService` (`internal/daemon/api/volumes.go`) is the CRUD API; the scheduler
 owns auto-create, pinning, `NODE_LOST` tracking and lease renewal
 (`internal/daemon/scheduler/volumes.go`); the agent enforces the lease before
-starting a container (`internal/daemon/agent/executor.go`). Stateful deploys use
-stop-then-start (T-63), and snapshots back up to S3 (T-64/T-65).
+starting a container (`internal/daemon/agent/executor.go`); the deployment
+orchestrator runs the stop-then-start machine for stateful releases
+(`internal/daemon/scheduler/stateful.go`). Snapshots back up to S3 (T-64/T-65).
