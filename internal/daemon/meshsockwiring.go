@@ -31,7 +31,7 @@ const meshsockLabel = api.MeshsockLabel
 // startRelayServer runs the control-node TCP relay (T-58) on :7443 with the CA
 // server cert, requiring node client certs. meshsock nodes fall back to it when
 // no UDP path works. Best-effort: a listen failure is logged, not fatal.
-func startRelayServer(ctx context.Context, authority *ca.CA, cfg config.Config, nodeID string, log *slog.Logger) {
+func startRelayServer(ctx context.Context, authority *ca.CA, cfg config.Config, log *slog.Logger) {
 	serverTLS, err := authority.ServerTLSConfig([]string{"localhost"}, serverIPs(controlMeshIP(cfg)))
 	if err != nil {
 		log.Warn("relay: server tls", "err", err)
@@ -81,7 +81,7 @@ func meshsockSetup(ctx context.Context, cfg config.Config, jr *joinResult, dm *m
 		return nil, fmt.Errorf("daemon: mesh client: %w", err)
 	}
 	meshClient := clusterv1.NewMeshServiceClient(conn)
-	go runPunchStream(ctx, meshClient, jr.NodeID, dm.PunchNow, log)
+	go runPunchStream(ctx, meshClient, jr.NodeID, dm.PunchNow)
 
 	// Relay client to the control relay (dials the control's mesh IP:7443 over
 	// the hub tunnel, node mTLS), injecting received packets into the bind.
@@ -125,7 +125,7 @@ func (p *punchRequester) RequestPunch(target string) ([]netip.AddrPort, time.Tim
 
 // runPunchStream keeps the node's PunchStream open, delivering control-pushed
 // PunchCommands to the device's bind. Reconnects with backoff.
-func runPunchStream(ctx context.Context, client clusterv1.MeshServiceClient, nodeID string, punchNow func(string, []netip.AddrPort, time.Time), log *slog.Logger) {
+func runPunchStream(ctx context.Context, client clusterv1.MeshServiceClient, nodeID string, punchNow func(string, []netip.AddrPort, time.Time)) {
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {

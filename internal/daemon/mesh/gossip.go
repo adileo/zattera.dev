@@ -151,7 +151,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	// WireGuard tunnel to a peer is often not up the instant gossip starts, and
 	// memberlist's Join is one-shot — a single early failure would otherwise
 	// isolate this node from the cluster's gossip forever.
-	if peers := gossipJoinAddrs(cfg.Peers, cfg.NodeID, cfg.BindAddr); len(peers) > 0 {
+	if peers := gossipJoinAddrs(cfg.Peers, cfg.BindAddr); len(peers) > 0 {
 		go g.retryJoin(peers)
 	}
 	log.Info("mesh gossip up", "bind", cfg.BindAddr, "port", GossipPort)
@@ -200,7 +200,7 @@ func gossipSecret(caHash []byte) []byte {
 }
 
 // gossipJoinAddrs normalizes peer mesh IPs to host:port and drops self / empties.
-func gossipJoinAddrs(peers []string, selfID, selfBind string) []string {
+func gossipJoinAddrs(peers []string, selfBind string) []string {
 	var out []string
 	for _, p := range peers {
 		if p == "" || p == selfBind {

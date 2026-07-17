@@ -289,12 +289,11 @@ func (a *Autoscaler) observe(st *state.Store, env *zatterav1.Environment) (envOb
 // observed data (→ freeze). The result is clamped to [minRep, maxRep].
 func scaleTarget(auto *zatterav1.Autoscale, obs envObservation, band float64, minRep, maxRep int) (int, bool) {
 	desired := minRep
-	consider := func(replicas int, observed float64, target uint32) bool {
+	consider := func(replicas int, observed float64, target uint32) {
 		d := int(math.Ceil(float64(replicas) * observed / (float64(target) * band)))
 		if d > desired {
 			desired = d
 		}
-		return true
 	}
 
 	if t := auto.GetTargetCpuPercent(); t > 0 {

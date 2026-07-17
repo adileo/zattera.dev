@@ -120,11 +120,9 @@ func (blockingConn) Write([]byte) (int, error) { select {} }
 func (blockingConn) Close() error              { return nil }
 
 type testCA struct {
-	cert   *x509.Certificate
-	key    *ecdsa.PrivateKey
-	pool   *x509.CertPool
-	caPEM  []byte
-	caCert tls.Certificate
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+	pool *x509.CertPool
 }
 
 func newTestCA(t *testing.T) *testCA {

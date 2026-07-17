@@ -16,7 +16,7 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 
 func TestMetricsSamplerRecordsAllScopes(t *testing.T) {
 	store := tsdb.Open(tsdb.Config{})
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	fake := clock.NewFake()
 
 	m := &metricsSampler{
@@ -65,7 +65,7 @@ func TestMetricsSamplerRecordsAllScopes(t *testing.T) {
 
 func TestMetricsSamplerNilProvidersSafe(t *testing.T) {
 	store := tsdb.Open(tsdb.Config{})
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	m := &metricsSampler{store: store, clk: clock.NewFake(), log: testLogger(), nodeID: "n1", interval: time.Second}
 	// No providers set: must not panic and records nothing.
 	m.sample(context.Background())
@@ -76,7 +76,7 @@ func TestMetricsSamplerNilProvidersSafe(t *testing.T) {
 
 func TestMetricsSamplerRunSamplesOnTick(t *testing.T) {
 	store := tsdb.Open(tsdb.Config{})
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	fake := clock.NewFake()
 	var calls int
 	m := &metricsSampler{

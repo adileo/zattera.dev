@@ -70,8 +70,8 @@ func TestStatsHistory(t *testing.T) {
 	// n2 is a worker.
 	s1 := tsdb.Open(tsdb.Config{})
 	s2 := tsdb.Open(tsdb.Config{})
-	defer s1.Close()
-	defer s2.Close()
+	defer func() { _ = s1.Close() }()
+	defer func() { _ = s2.Close() }()
 
 	recordSeries(s1, "cpu_percent", "node", "n1", at, []float64{25, 30})
 	recordSeries(s1, "rps", "env", "env1", at, []float64{10, 12})

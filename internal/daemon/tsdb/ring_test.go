@@ -19,7 +19,7 @@ func nodeKey(metric string) SeriesKey {
 
 func TestRecordQueryRoundTrip(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	k := nodeKey("cpu_percent")
 
 	for i := 0; i < 4; i++ {
@@ -42,7 +42,7 @@ func TestRecordQueryRoundTrip(t *testing.T) {
 
 func TestQueryRangeExcludesOutside(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	k := nodeKey("cpu_percent")
 	for i := 0; i < 10; i++ {
 		s.Record(k, Point{Time: base.Add(time.Duration(i) * RawStep), Value: 1})
@@ -59,7 +59,7 @@ func TestQueryRangeExcludesOutside(t *testing.T) {
 
 func TestOutOfOrderDrop(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	k := nodeKey("cpu_percent")
 
 	s.Record(k, Point{Time: base.Add(5 * RawStep), Value: 50})
@@ -78,7 +78,7 @@ func TestOutOfOrderDrop(t *testing.T) {
 
 func TestWrapAround(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	k := nodeKey("cpu_percent")
 
 	s.Record(k, Point{Time: base, Value: 1})
@@ -98,7 +98,7 @@ func TestWrapAround(t *testing.T) {
 
 func TestDownsampleAverage(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	k := nodeKey("cpu_percent")
 
 	// 20 raw slots (300s / 15s) all inside one 5m downsample slot; values 1..20.
@@ -125,7 +125,7 @@ func TestDownsampleAverage(t *testing.T) {
 
 func TestResolutionSelection(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	k := nodeKey("cpu_percent")
 	s.Record(k, Point{Time: base, Value: 7})
 
@@ -141,7 +141,7 @@ func TestResolutionSelection(t *testing.T) {
 
 func TestKeysFilter(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	s.Record(SeriesKey{Metric: "cpu", Scope: "node", ScopeID: "n1"}, Point{Time: base, Value: 1})
 	s.Record(SeriesKey{Metric: "rps", Scope: "env", ScopeID: "e1"}, Point{Time: base, Value: 1})
 	s.Record(SeriesKey{Metric: "rps", Scope: "env", ScopeID: "e2"}, Point{Time: base, Value: 1})
@@ -176,7 +176,7 @@ func TestPersistLoad(t *testing.T) {
 	}
 
 	s2 := Open(Config{Path: path, Clock: clock.NewFake()})
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	got := s2.Query(k, lb, lb.Add(4*RawStep), RawStep)
 	if len(got) != 5 {
 		t.Fatalf("after reload want 5 points, got %d", len(got))
@@ -196,7 +196,7 @@ func TestLoadCorruptStartsEmpty(t *testing.T) {
 	}
 	// Must not panic; starts empty and is usable.
 	s := Open(Config{Path: path, Clock: clock.NewFake()})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if keys := s.Keys("", ""); len(keys) != 0 {
 		t.Fatalf("corrupt load should start empty, got %d keys", len(keys))
 	}
@@ -214,7 +214,7 @@ func TestGCDropsStaleSeries(t *testing.T) {
 
 	// Record a sample "now", then two series whose newest sample is old.
 	s := Open(Config{Path: path, Clock: fake})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	old := fake.Now().Add(-49 * time.Hour)
 	fresh := fake.Now().Add(-1 * time.Hour)
@@ -232,7 +232,7 @@ func TestGCDropsStaleSeries(t *testing.T) {
 
 func TestQueryUnknownSeries(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if got := s.Query(nodeKey("nope"), base, base.Add(time.Hour), RawStep); got != nil {
 		t.Fatalf("unknown series query = %v, want nil", got)
 	}
@@ -240,7 +240,7 @@ func TestQueryUnknownSeries(t *testing.T) {
 
 func TestQueryInvertedRange(t *testing.T) {
 	s := Open(Config{})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	k := nodeKey("cpu")
 	s.Record(k, Point{Time: base, Value: 1})
 	if got := s.Query(k, base.Add(time.Hour), base, RawStep); got != nil {
