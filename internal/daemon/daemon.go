@@ -390,6 +390,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 		ExecService:       api.NewExecServer(st, api.GRPCExecDialer{Connect: agentLocalConnect}, log),
 		MetricsService:    api.NewMetricsServer(st, live, api.GRPCStatsDialer{Connect: agentLocalConnect}, clk, log),
 		JobService:        api.NewJobServer(st, rs, clk),
+		VolumeService:     api.NewVolumeServer(st, rs, clk),
 		AgentSyncService:  syncSrv,
 		JoinService:       joinSrv,
 		MeshService:       api.NewMeshServer(st, rs, clk, log),

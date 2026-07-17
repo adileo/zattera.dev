@@ -104,7 +104,7 @@ If you declare nothing and the app has an HTTP port, you get the HTTP `/healthz`
 | `domains` | — | [Custom domains](custom-domains) for this environment |
 | `command` | image default | Override the container command |
 | `stop_grace` | `10s` | Graceful-stop window before kill |
-| `stateful` | `false` | Stateful service semantics *(volumes are WIP)* |
+| `stateful` | `false` | Stateful service: node-pinned [volumes](../data/volumes), exactly-one, stop-then-start deploys |
 | `idle_timeout` | — | [Scale-to-zero](../scaling/scale-to-zero) idle window *(WIP)* |
 | `scale_to_zero` / `max_concurrency` | — | Serverless mode *(WIP)* |
 | `[env.<name>.resources]` | — | `cpu_millis`, `memory_mb` reservations (used for placement) |
@@ -121,9 +121,10 @@ If you declare nothing and the app has an HTTP port, you get the HTTP `/healthz`
 
 No ports declared = one `http` port on `8080`.
 
-#### `[[env.<name>.volumes]]` *(work in progress)*
+#### `[[env.<name>.volumes]]`
 
-`name` + `mount_path`, both required. See [Volumes](../data/volumes).
+`name` + `mount_path`, both required. Declares a node-pinned persistent volume
+for a `stateful` service. See [Volumes](../data/volumes).
 
 ### `[[cron]]` *(scheduling is work in progress)*
 

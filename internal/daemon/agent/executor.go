@@ -312,6 +312,15 @@ func (e *Executor) bringUp(ctx context.Context, a *zatterav1.Assignment, rt *clu
 		return e.fail(id, hash, "no runtime payload (image/spec) for assignment")
 	}
 
+	// Fencing (T-62, spec §9.1): a stateful+volume assignment may start only when
+	// its volume lease names THIS node and THIS assignment. This is the
+	// defense-in-depth guard against a double-run during a partition — a stale
+	// AssignmentSet frame must never let a second node mount the volume. Report
+	// PENDING (not FAILED, which would park it) so it starts once the lease lands.
+	if reason := leaseWithholds(id, e.cfg.NodeID, rt); reason != "" {
+		return observe(zatterav1.InstanceState_INSTANCE_STATE_PENDING, "", reason, e.now())
+	}
+
 	e.emit(map[string]*zatterav1.AssignmentObserved{
 		id: observe(zatterav1.InstanceState_INSTANCE_STATE_PULLING, "", "", e.now()),
 	})
@@ -611,6 +620,27 @@ func short(id string) string {
 }
 
 func volumeName(envID, vol string) string { return "zt-" + short(envID) + "-" + vol }
+
+// leaseWithholds returns a non-empty reason when a stateful+volume assignment
+// must NOT start because its fencing lease does not name this node and this
+// assignment (T-62). A non-stateful or volumeless assignment is never withheld.
+func leaseWithholds(assignmentID, nodeID string, rt *clusterv1.AssignmentRuntime) string {
+	spec := rt.GetSpec()
+	if !spec.GetStateful() || len(spec.GetVolumes()) == 0 {
+		return ""
+	}
+	lease := rt.GetVolumeLease()
+	if lease == nil {
+		return "waiting for volume lease"
+	}
+	if lease.GetNodeId() != nodeID {
+		return "volume leased to another node (" + lease.GetNodeId() + ")"
+	}
+	if lease.GetAssignmentId() != assignmentID {
+		return "volume leased to another instance"
+	}
+	return ""
+}
 
 func envList(env map[string]string) []string {
 	if len(env) == 0 {

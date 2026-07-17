@@ -234,6 +234,16 @@ func (s *SyncServer) buildRuntime(a *zatterav1.Assignment) *clusterv1.Assignment
 	if subnet, ok := s.store.NetworkAllocation(a.GetProjectId(), a.GetEnvironmentId(), a.GetNodeId()); ok {
 		rt.SubnetCidr = subnet
 	}
+	// Fencing lease (T-62): for a stateful service the agent may only start the
+	// container when the volume lease names this node AND this assignment. Carry
+	// the current lease from the first declared volume (all pin to one node).
+	if spec.GetStateful() {
+		if vols := spec.GetVolumes(); len(vols) > 0 {
+			if v, ok := s.store.VolumeByName(a.GetProjectId(), a.GetEnvironmentId(), vols[0].GetVolumeName()); ok {
+				rt.VolumeLease = v.GetLease()
+			}
+		}
+	}
 	// Env vars: user-set (decrypted) values first, then platform-injected vars
 	// (T-50). ZATTERA_ENV/ZATTERA_APP are authoritative identity and override
 	// any user value; PORT defaults to the first port but respects a user

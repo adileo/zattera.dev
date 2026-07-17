@@ -49,6 +49,11 @@ var minRole = map[string]zatterav1.Role{
 	"/zattera.v1.JobService/CancelJob": zatterav1.Role_ROLE_DEVELOPER,
 	"/zattera.v1.JobService/GetJob":    zatterav1.Role_ROLE_VIEWER,
 	"/zattera.v1.JobService/ListJobs":  zatterav1.Role_ROLE_VIEWER,
+
+	// VolumeService (T-62)
+	"/zattera.v1.VolumeService/CreateVolume": zatterav1.Role_ROLE_DEVELOPER,
+	"/zattera.v1.VolumeService/DeleteVolume": zatterav1.Role_ROLE_DEVELOPER,
+	"/zattera.v1.VolumeService/ListVolumes":  zatterav1.Role_ROLE_VIEWER,
 }
 
 // RBAC enforces per-project roles. It resolves the request's project_id field

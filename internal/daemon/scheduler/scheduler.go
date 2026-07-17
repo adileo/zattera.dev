@@ -86,10 +86,20 @@ func (s *Scheduler) evaluate(ctx context.Context) error {
 		return raftstore.ErrNotLeader
 	}
 	st := s.store.State()
+	// Auto-create stateful volumes and track NODE_LOST before placement so
+	// pinnedNodeID can resolve (T-62).
+	if err := s.ensureVolumes(ctx, st); err != nil {
+		return err
+	}
 	for _, env := range st.ListEnvironments("", "") {
 		if err := s.evaluateEnv(ctx, st, env); err != nil {
 			return err // propagate ErrNotLeader; log others inside
 		}
+	}
+	// Renew fencing leases after placement so a freshly placed stateful
+	// assignment is leased in the same pass (T-62).
+	if err := s.reconcileLeases(ctx, st); err != nil {
+		return err
 	}
 	// Reap assignments whose env/release was deleted (T-27); these no longer
 	// belong to any environment the loop above visits.

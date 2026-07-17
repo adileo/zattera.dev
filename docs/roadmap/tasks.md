@@ -14,8 +14,9 @@ something runnable.
 > (`test/cloud/ha_test.go`: quorum forms, leader-kill failover, dead node DOWN
 > in ~19s). Remaining T-55b polish (control mesh-hub for workers,
 > leadership-reactive device loops) is optional. **T-57/T-57c** (meshsock),
-> **T-59/T-60** (ring TSDB metrics sampler + historical stats API/CLI) and
-> **T-61** (CPU/mem/RPS autoscaler) are done. Next up: T-62 (volumes).
+> **T-59/T-60** (ring TSDB metrics sampler + historical stats API/CLI),
+> **T-61** (CPU/mem/RPS autoscaler) and **T-62** (node-pinned volumes + fencing
+> leases) are done. Next up: T-63 (stateful stop-then-start deploys).
 
 ## What already exists (do not rebuild)
 
@@ -2192,8 +2193,43 @@ min≥1 here when min>0; leadership change resets in-memory hold timers
 after sustained low + cooldown, freeze on missing data, clamping.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestAutoscaler`
 
-### T-62 — Volumes: objects, leases, mounts
+### T-62 — Volumes: objects, leases, mounts  ✅ **DONE** (CLI → T-77/T-78)
 Phase 6 · Depends: T-24, T-15 · Size: L
+**Landed:**
+- **VolumeService CRUD** (`internal/daemon/api/volumes.go`): CreateVolume (pins
+  to `node_id` or the least-used ALIVE worker; ACTIVE; DNS-safe unique name per
+  env), ListVolumes, DeleteVolume (refuses while mounted — a live lease or a RUN
+  instance on the volume's node). Registered in `server.go` + gateway; RBAC
+  developer/viewer. Snapshot/Restore/Files stay Unimplemented (T-64/T-65/T-77).
+- **Auto-create + pinning** (`internal/daemon/scheduler/volumes.go`):
+  `ensureVolumes` (before placement) creates a Volume for each declared mount of
+  a stateful service, pinned to the least-used ALIVE worker; `pinnedNodeID`
+  (T-24) already restricts placement to `volume.node_id` (verified + tested).
+- **NODE_LOST**: `trackVolumeNode` flips a volume to NODE_LOST when its pinned
+  node is DOWN (event fired) and back to ACTIVE on recovery. The stateful
+  assignment is kept in place (not rescheduled off its data), so no replacement
+  is ever created — the no-double-run guarantee.
+- **Fencing lease**: `reconcileLeases` (after placement, so a freshly placed
+  assignment is leased in the same pass) grants/renews `VolumeLease{node,
+  assignment, expires: now+60s}` for the holder on a live pinned node, never
+  stealing a still-valid lease from another node. The proto gained
+  `AssignmentRuntime.volume_lease` (regenerated); `agentsync.buildRuntime`
+  attaches the current lease; the agent (`executor.leaseWithholds`) refuses to
+  start a stateful+volume container unless the lease names THIS node and THIS
+  assignment (reports PENDING, not FAILED, so it starts once the lease lands).
+- **Agent mounts** were already in place (executor `EnsureVolume` + `Mounts`).
+**Tests:** `TestVolumeLease` (scheduler: auto-create+pin, lease acquire/renew
+with fake clock, NODE_LOST + no reschedule + lease lapse, recovery),
+`TestLeaseHelpers`; `TestExecutorVolumeFencing`/`TestLeaseWithholds` (agent:
+starts only on a matching lease, withholds on foreign/absent/other-instance
+lease — real fakeruntime container counts); `TestVolumeServer*` (api CRUD +
+refuse-while-mounted); chaos `TestVolumeFencing` (node dies → NODE_LOST, invariant
+held: never a second RUN replica, never migrated off the dead node).
+**Deferred:** the `zattera volume` CLI (create/ls/rm) → T-77/T-78; DeleteVolume's
+best-effort docker-volume removal on the node (needs an agent RPC) → T-77.
+**Acceptance:** `go test ./internal/daemon/scheduler/ -run TestVolumeLease` ✅;
+`go test -tags chaos ./test/chaos/` ✅.
+**Original spec below.**
 **Files:** `internal/daemon/api/volumes.go`, `internal/daemon/scheduler/`
 (placement integration), `internal/daemon/agent/volumes.go`, tests
 **Steps:**

@@ -173,6 +173,11 @@ message AssignmentRuntime {
   // Per-(project,env,node) Docker bridge subnet the agent attaches the
   // container to (T-46); control fills it from the NetworkAllocation.
   string subnet_cidr = 4;
+  // Fencing lease for the assignment's volume(s) (T-62, spec §9.1). Control
+  // sets it for stateful+volume assignments; the agent refuses to start the
+  // container unless the lease names this node — the guard against a double-run
+  // during a partition.
+  zattera.v1.VolumeLease volume_lease = 5;
 }
 
 message ActivateService {
