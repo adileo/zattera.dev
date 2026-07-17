@@ -5,11 +5,8 @@ description: Incremental S3 snapshots and one-command full-platform restore — 
 
 # Backup & disaster recovery
 
-::: callout warning Work in progress
-Full-platform `zatterad restore` (T-66) is still on the
-[roadmap](../roadmap/tasks). Volume snapshots — the engine (T-64) and the
-scheduling/CLI (T-65) — have landed.
-:::
+Both volume snapshots (T-64/T-65) and full-platform backup + `zatterad restore`
+(T-66) have landed.
 
 ## Volume snapshots
 
@@ -36,11 +33,6 @@ A snapshot runs on the volume's pinned node: the control plane dials that node,
 which streams progress back. Restore refuses while the volume is mounted — stop
 the service (scale its environment to 0) first.
 
-**What it will do:** content-addressed, encrypted, incremental snapshots of
-volumes and platform state to any S3-compatible bucket — and `zatterad restore`
-to rebuild the entire platform (state + volumes + images) onto fresh
-infrastructure with one command.
-
 ## The snapshot engine (T-64)
 
 Volume snapshots are **content-addressed and deduplicated**, so an incremental
@@ -63,6 +55,33 @@ snapshot only uploads what changed:
 The engine (`internal/daemon/volumes`) operates on an already-quiesced path;
 quiescing a live database with a pre-hook is the scheduling layer's job (T-65).
 
-Today, [`zattera state export`](../operations/state-export) already gives you a
-GitOps-style export of all desired state (projects, apps, environments, domains)
-that can be re-applied to a cluster.
+## Disaster recovery (T-66)
+
+A full backup captures the whole control plane to the same S3 bucket:
+
+- the **raft state** (all projects, apps, environments, volumes, …), encrypted
+  with the cluster data key;
+- the **cluster CA** cert + key (encrypted) — so restored nodes' certificates
+  stay valid;
+- the **data key itself**, sealed under a recovery **passphrase** — the only way
+  back in;
+- an **index** referencing each volume's latest snapshot.
+
+To rebuild onto fresh infrastructure:
+
+```bash
+zatterad restore --from s3://my-bucket/zattera \
+  --passphrase-file /secure/passphrase \
+  --data-dir /var/lib/zattera         # must be empty
+zatterad server --data-dir /var/lib/zattera
+```
+
+Restore unseals the data key with the passphrase, decrypts the state and CA into
+the fresh data dir, and bootstraps a new single-node raft holding the restored
+state (old node records are kept but marked **DOWN**, their mesh IPs preserved so
+rejoining nodes reclaim the same addresses). As workers rejoin they reclaim their
+volumes and restore the referenced snapshots. **RPO** is the age of the latest
+backup.
+
+For a lighter-weight, GitOps-style export of just the desired state (no volumes),
+[`zattera state export`](../operations/state-export) remains available.

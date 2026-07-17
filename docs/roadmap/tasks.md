@@ -17,8 +17,9 @@ something runnable.
 > **T-59/T-60** (ring TSDB metrics sampler + historical stats API/CLI),
 > **T-61** (CPU/mem/RPS autoscaler), **T-62** (node-pinned volumes + fencing
 > leases), **T-63** (stateful stop-then-start deploys), **T-64** (content-
-> addressed snapshot engine) and **T-65** (snapshot orchestration + CLI) are
-> done. Next up: T-66 (full backup + `zatterad restore`).
+> addressed snapshot engine), **T-65** (snapshot orchestration + CLI) and
+> **T-66** (full backup + `zatterad restore` DR) are done. Next up: T-67 (cron
+> jobs).
 
 ## What already exists (do not rebuild)
 
@@ -2407,8 +2408,35 @@ print the command to do it); progress streaming keeps the CLI informed
 integration optional.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestSnapshotSchedule`
 
-### T-66 — Full backup + `zatterad restore` (DR)
+### T-66 — Full backup + `zatterad restore` (DR)  ✅ **DONE** (schedule/registry/rejoin follow-ups noted)
 Phase 6 · Depends: T-64, T-55 · Size: L
+**Landed:** `internal/daemon/backup/{backup.go,restore.go}` + `raftstore.ForceSnapshot`.
+- **Backup** writes to the S3 object store under `backups/<ts>/`: the raft state
+  (`state.SnapshotProto` → marshaled → data-key-sealed → `state.pb.enc`), the CA
+  cert+key (data-key-sealed → `ca.pb.enc`, so restored certs stay valid), the
+  data key **sealed under a recovery passphrase** (`secrets.SealDataKey` →
+  `keys.pb`), and a plaintext `index.json` (pointers + each volume's latest
+  completed snapshot manifest key) + a `backups/latest` pointer. `Verify`
+  downloads + decrypts the latest state and rebuilds it (weekly restore-test
+  primitive).
+- **Restore** (`zatterad restore --from s3://… --passphrase-file … --data-dir …`,
+  a `daemon.Commands()` subcommand): unseals the data key with the passphrase,
+  decrypts state + CA into a FRESH data dir, marks old nodes DOWN (mesh IPs
+  preserved), and bootstraps a single-node raft holding the restored state —
+  loaded via `RestoreProto` then persisted by applying a `restored-at` marker
+  (to advance the applied index past bootstrap) + `ForceSnapshot`, so it survives
+  the next `zatterad server` start.
+**Tests:** `internal/daemon/backup` unit (backup→verify round trip, wrong
+passphrase fails, passphrase required); integration `TestDisasterRecovery`
+(MinIO: seed state + a real volume snapshot → backup → restore into a fresh dir →
+reopen raft and assert projects/apps/envs restored + old node DOWN with preserved
+mesh IP + the volume snapshot still restores byte-identical).
+**Deferred (follow-ups):** the leader backup **schedule/API** trigger + the weekly
+`Verify` loop wiring; **registry blob** backup/restore; the live worker-**rejoin**
+volume-data restore choreography (the index records what to restore; the
+`RestoreSnapshot` API + a rejoining worker do the actual data restore).
+**Acceptance:** `go test -tags integration -run TestDisasterRecovery ./test/integration/` ✅
+**Original spec below.**
 **Files:** `internal/daemon/backup/{backup.go,restore.go}`, CLI `backup.go`,
 `test/integration/dr_test.go`
 **Steps:**

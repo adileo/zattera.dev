@@ -209,6 +209,13 @@ func (s *Store) Barrier(ctx context.Context) error {
 	return nil
 }
 
+// ForceSnapshot persists the current FSM state as a raft snapshot. Disaster
+// recovery uses it after loading a restored state so the fresh node's state is
+// durable across a restart (T-66).
+func (s *Store) ForceSnapshot() error {
+	return s.raft.Snapshot().Error()
+}
+
 // WaitForLeader blocks until a leader is known or ctx expires. Convenience
 // for startup and tests.
 func (s *Store) WaitForLeader(ctx context.Context) error {
