@@ -86,9 +86,9 @@ func (s *AlertServer) PutChannel(ctx context.Context, req *zatterav1.PutChannelR
 		return nil, status.Error(codes.InvalidArgument, "channel name is required")
 	}
 	switch ch.GetType() {
-	case "webhook", "slack", "email":
+	case "webhook", "slack", "email", "telegram":
 	default:
-		return nil, status.Errorf(codes.InvalidArgument, "unknown channel type %q (want webhook|slack|email)", ch.GetType())
+		return nil, status.Errorf(codes.InvalidArgument, "unknown channel type %q (want webhook|slack|email|telegram)", ch.GetType())
 	}
 
 	// Carry existing sealed secrets forward on update; seal any new plaintext.
@@ -180,6 +180,18 @@ func (s *AlertServer) sealChannelSecrets(ch, prev *zatterav1.NotificationChannel
 			return err
 		}
 		ch.GetSmtp().Password = v
+	case "telegram":
+		if ch.GetTelegramChatId() == "" {
+			return status.Error(codes.InvalidArgument, "telegram channel requires telegram_chat_id")
+		}
+		v, err := seal(req.GetTelegramBotTokenPlain(), prev.GetTelegramBotToken())
+		if err != nil {
+			return err
+		}
+		if v == nil {
+			return status.Error(codes.InvalidArgument, "telegram channel requires telegram_bot_token_plain")
+		}
+		ch.TelegramBotToken = v
 	}
 	return nil
 }
@@ -206,6 +218,7 @@ func redactChannel(c *zatterav1.NotificationChannel) *zatterav1.NotificationChan
 	out := clone(c)
 	out.WebhookSecret = nil
 	out.SlackWebhookUrl = nil
+	out.TelegramBotToken = nil
 	if out.GetSmtp() != nil {
 		out.GetSmtp().Password = nil
 	}

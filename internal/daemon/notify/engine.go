@@ -241,6 +241,12 @@ func (e *Engine) dispatch(ctx context.Context, ch *zatterav1.NotificationChannel
 			Host: sm.GetHost(), Port: sm.GetPort(), Username: sm.GetUsername(), Password: pw,
 			From: sm.GetFrom(), To: ch.GetEmailTo(), StartTLS: sm.GetStarttls(),
 		}).Send(ctx, n)
+	case "telegram":
+		token, err := e.openString(ch.GetTelegramBotToken())
+		if err != nil {
+			return err
+		}
+		return NewTelegram(token, ch.GetTelegramChatId(), e.http).Send(ctx, n)
 	default:
 		return fmt.Errorf("notify: unknown channel type %q", ch.GetType())
 	}

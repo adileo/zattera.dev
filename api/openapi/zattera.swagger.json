@@ -3814,7 +3814,7 @@
         },
         "type": {
           "type": "string",
-          "title": "\"webhook\" | \"slack\" | \"email\""
+          "title": "\"webhook\" | \"slack\" | \"email\" | \"telegram\""
         },
         "webhookUrlPlain": {
           "type": "string",
@@ -3833,6 +3833,14 @@
         },
         "smtp": {
           "$ref": "#/definitions/v1SMTPConfig"
+        },
+        "telegramBotToken": {
+          "$ref": "#/definitions/v1EncryptedValue",
+          "title": "telegram: bot API token (secret)"
+        },
+        "telegramChatId": {
+          "type": "string",
+          "title": "telegram: target chat/channel id"
         }
       },
       "description": "NotificationChannel is a delivery target (webhook/Slack/email)."
@@ -3953,6 +3961,9 @@
           "type": "string"
         },
         "smtpPasswordPlain": {
+          "type": "string"
+        },
+        "telegramBotTokenPlain": {
           "type": "string"
         }
       }

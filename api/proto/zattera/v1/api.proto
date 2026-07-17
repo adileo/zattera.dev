@@ -858,6 +858,7 @@ message PutChannelRequest {
   string webhook_secret_plain = 2;
   string slack_webhook_url_plain = 3;
   string smtp_password_plain = 4;
+  string telegram_bot_token_plain = 5;
 }
 
 message ListChannelsResponse {

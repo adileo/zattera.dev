@@ -195,9 +195,10 @@ func newAlertChannelsAddCmd() *cobra.Command {
 	var emailTo, smtpHost, smtpUser, smtpPass, smtpFrom string
 	var smtpPort uint32
 	var smtpStartTLS bool
+	var tgToken, tgChatID string
 	cmd := &cobra.Command{
 		Use:   "add TYPE NAME",
-		Short: "Add a notification channel: webhook | slack | email",
+		Short: "Add a notification channel: webhook | slack | email | telegram",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			typ, chName := args[0], args[1]
@@ -223,8 +224,14 @@ func newAlertChannelsAddCmd() *cobra.Command {
 					Host: smtpHost, Port: smtpPort, Username: smtpUser, From: smtpFrom, Starttls: smtpStartTLS,
 				}
 				req.SmtpPasswordPlain = smtpPass
+			case "telegram":
+				if tgToken == "" || tgChatID == "" {
+					return fmt.Errorf("--bot-token and --chat-id are required for a telegram channel")
+				}
+				req.Channel.TelegramChatId = tgChatID
+				req.TelegramBotTokenPlain = tgToken
 			default:
-				return fmt.Errorf("unknown channel type %q (want webhook|slack|email)", typ)
+				return fmt.Errorf("unknown channel type %q (want webhook|slack|email|telegram)", typ)
 			}
 
 			client, _, err := clientFromContext()
@@ -253,6 +260,8 @@ func newAlertChannelsAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&smtpPass, "smtp-pass", "", "email: SMTP password (sealed server-side)")
 	cmd.Flags().StringVar(&smtpFrom, "from", "", "email: From address")
 	cmd.Flags().BoolVar(&smtpStartTLS, "starttls", true, "email: use STARTTLS")
+	cmd.Flags().StringVar(&tgToken, "bot-token", "", "telegram: bot API token (sealed server-side)")
+	cmd.Flags().StringVar(&tgChatID, "chat-id", "", "telegram: target chat/channel id")
 	return cmd
 }
 
@@ -300,6 +309,8 @@ func channelTarget(c *zatterav1.NotificationChannel) string {
 		return c.GetEmailTo()
 	case "slack":
 		return "(webhook)"
+	case "telegram":
+		return "chat " + c.GetTelegramChatId()
 	default:
 		return ""
 	}

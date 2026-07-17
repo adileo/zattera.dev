@@ -31,13 +31,15 @@ message MetricCondition {
 message NotificationChannel {
   Meta meta = 1;
   string name = 2;
-  string type = 3; // "webhook" | "slack" | "email"
+  string type = 3; // "webhook" | "slack" | "email" | "telegram"
   // type-specific settings; secret values encrypted:
   string webhook_url_plain = 4;             // webhook: may be non-secret
   EncryptedValue webhook_secret = 5;        // optional HMAC signing key
   EncryptedValue slack_webhook_url = 6;
   string email_to = 7;
   SMTPConfig smtp = 8;
+  EncryptedValue telegram_bot_token = 9;    // telegram: bot API token (secret)
+  string telegram_chat_id = 10;             // telegram: target chat/channel id
 }
 
 message SMTPConfig {

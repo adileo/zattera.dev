@@ -117,7 +117,7 @@ Alert rules and notification channels. See [Metrics & alerts](../operations/metr
 | `zt alerts rules add NAME (--metric M --scope S --op OP --threshold T --for D \| --event KIND) [--channel ID…]` | Add a metric-threshold or event rule |
 | `zt alerts rules rm ID` | Delete a rule |
 | `zt alerts channels ls` | List channels (secrets redacted) |
-| `zt alerts channels add webhook\|slack\|email NAME [type flags]` | Add a channel (secrets sealed server-side) |
+| `zt alerts channels add webhook\|slack\|telegram\|email NAME [type flags]` | Add a channel (secrets sealed server-side) |
 | `zt alerts channels rm ID` | Delete a channel |
 
 ## Custom domains

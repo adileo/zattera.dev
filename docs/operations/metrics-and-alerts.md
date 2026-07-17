@@ -38,9 +38,12 @@ zt alerts rules ls
 ```bash
 zt alerts channels add webhook ops --url https://hooks.example.com/x --secret <hmac-key>
 zt alerts channels add slack team --slack-url https://hooks.slack.com/services/...
+zt alerts channels add telegram oncall --bot-token <bot-token> --chat-id <chat-id>
 zt alerts channels add email oncall --to oncall@example.com --from alerts@example.com \
   --smtp-host smtp.example.com --smtp-user alerts --smtp-pass <pw> --starttls
 zt alerts channels ls   # secrets are redacted
 ```
 
-Channel secrets (webhook HMAC key, Slack URL, SMTP password) are **sealed with the cluster data key** server-side and never returned by the API. Webhook payloads are JSON and, when a signing key is set, carry an `X-Zattera-Signature: sha256=…` HMAC of the body. A slow or failing channel never stalls evaluation (10s per-channel timeout, and the failure itself is recorded as an event); email is treated as best-effort.
+Supported channel types are **webhook**, **slack**, **telegram**, and **email**. For Telegram, create a bot with [@BotFather](https://t.me/BotFather) for the token and use the target chat/channel id (a group id is negative, e.g. `-1001…`); the bot must be a member of that chat.
+
+Channel secrets (webhook HMAC key, Slack URL, Telegram bot token, SMTP password) are **sealed with the cluster data key** server-side and never returned by the API. Webhook payloads are JSON and, when a signing key is set, carry an `X-Zattera-Signature: sha256=…` HMAC of the body. A slow or failing channel never stalls evaluation (10s per-channel timeout, and the failure itself is recorded as an event); email is treated as best-effort.

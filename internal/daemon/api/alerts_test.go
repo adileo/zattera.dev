@@ -115,6 +115,42 @@ func TestAlertChannelSealsAndRedacts(t *testing.T) {
 	}
 }
 
+func TestAlertTelegramChannel(t *testing.T) {
+	srv, ctx := newAlertSrv(t)
+
+	// Missing chat id → rejected.
+	if _, err := srv.PutChannel(ctx, &zatterav1.PutChannelRequest{
+		Channel:               &zatterav1.NotificationChannel{Name: "tg", Type: "telegram"},
+		TelegramBotTokenPlain: "123:abc",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument without chat id, got %v", status.Code(err))
+	}
+
+	ch, err := srv.PutChannel(ctx, &zatterav1.PutChannelRequest{
+		Channel:               &zatterav1.NotificationChannel{Name: "tg", Type: "telegram", TelegramChatId: "-1001"},
+		TelegramBotTokenPlain: "123:abc",
+	})
+	if err != nil {
+		t.Fatalf("put telegram channel: %v", err)
+	}
+	if ch.GetTelegramBotToken() != nil {
+		t.Fatal("PutChannel leaked the telegram bot token")
+	}
+	// Stored token is sealed (not plaintext); chat id is retained.
+	var stored *zatterav1.NotificationChannel
+	for _, c := range srv.store.ListNotificationChannels() {
+		if c.GetMeta().GetId() == ch.GetMeta().GetId() {
+			stored = c
+		}
+	}
+	if stored.GetTelegramBotToken() == nil || string(stored.GetTelegramBotToken().GetCiphertext()) == "123:abc" {
+		t.Fatal("telegram token not sealed")
+	}
+	if stored.GetTelegramChatId() != "-1001" {
+		t.Fatalf("chat id not stored: %q", stored.GetTelegramChatId())
+	}
+}
+
 func TestAlertChannelUnknownType(t *testing.T) {
 	srv, ctx := newAlertSrv(t)
 	_, err := srv.PutChannel(ctx, &zatterav1.PutChannelRequest{

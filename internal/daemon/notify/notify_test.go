@@ -300,6 +300,44 @@ func TestSlackPayload(t *testing.T) {
 	}
 }
 
+// TestTelegramPayload: the Telegram notifier posts sendMessage with the chat id
+// and text, and puts the bot token in the URL path (never the body).
+func TestTelegramPayload(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+	}))
+	defer srv.Close()
+
+	tg := NewTelegram("123:secret-token", "-1001", srv.Client())
+	tg.baseURL = srv.URL // redirect to the test server
+
+	n := Notification{Rule: "node-down", Firing: true, Severity: "error", Scope: "node:n1", Summary: "node is DOWN"}
+	if err := tg.Send(context.Background(), n); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if gotBody["chat_id"] != "-1001" {
+		t.Fatalf("chat_id = %q", gotBody["chat_id"])
+	}
+	if text := gotBody["text"]; !contains(text, "FIRING") || !contains(text, "node-down") {
+		t.Fatalf("unexpected telegram text: %q", text)
+	}
+	if !contains(gotPath, "sendMessage") || contains(gotBody["text"], "secret-token") {
+		t.Fatalf("bot token leaked or wrong endpoint: path=%q", gotPath)
+	}
+}
+
+// TestTelegramMissingConfig: an incomplete telegram channel errors rather than
+// sending.
+func TestTelegramMissingConfig(t *testing.T) {
+	if err := NewTelegram("", "chat", nil).Send(context.Background(), Notification{}); err == nil {
+		t.Fatal("expected an error for a telegram channel without a token")
+	}
+}
+
 // TestDeliverIsolatesChannelFailure: a failing channel does not stop delivery to
 // others, and records a failure event.
 func TestDeliverIsolatesChannelFailure(t *testing.T) {
