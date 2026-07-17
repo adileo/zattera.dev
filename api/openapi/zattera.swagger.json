@@ -3944,6 +3944,16 @@
       "properties": {
         "channel": {
           "$ref": "#/definitions/v1NotificationChannel"
+        },
+        "webhookSecretPlain": {
+          "type": "string",
+          "description": "Secret values in plaintext; the control plane seals them into the channel's\nencrypted fields (never store or echo the plaintext). Empty leaves an\nexisting sealed value untouched on update."
+        },
+        "slackWebhookUrlPlain": {
+          "type": "string"
+        },
+        "smtpPasswordPlain": {
+          "type": "string"
         }
       }
     },

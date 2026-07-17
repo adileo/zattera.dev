@@ -852,6 +852,12 @@ message DeleteRuleRequest {
 
 message PutChannelRequest {
   NotificationChannel channel = 1;
+  // Secret values in plaintext; the control plane seals them into the channel's
+  // encrypted fields (never store or echo the plaintext). Empty leaves an
+  // existing sealed value untouched on update.
+  string webhook_secret_plain = 2;
+  string slack_webhook_url_plain = 3;
+  string smtp_password_plain = 4;
 }
 
 message ListChannelsResponse {

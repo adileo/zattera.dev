@@ -107,6 +107,19 @@ Cluster-wide backups (admin). See [Backup & disaster recovery](../data/backup-re
 | `zt backup run` | Run a full backup now (state + CA + volume snapshot refs) |
 | `zt backup ls` | List past backups and the current destination |
 
+## Alerts
+
+Alert rules and notification channels. See [Metrics & alerts](../operations/metrics-and-alerts#alerts).
+
+| Command | Description |
+| --- | --- |
+| `zt alerts rules ls` | List alert rules |
+| `zt alerts rules add NAME (--metric M --scope S --op OP --threshold T --for D \| --event KIND) [--channel ID…]` | Add a metric-threshold or event rule |
+| `zt alerts rules rm ID` | Delete a rule |
+| `zt alerts channels ls` | List channels (secrets redacted) |
+| `zt alerts channels add webhook\|slack\|email NAME [type flags]` | Add a channel (secrets sealed server-side) |
+| `zt alerts channels rm ID` | Delete a channel |
+
 ## Custom domains
 
 Defaults to `--env staging`. See [Custom domains](../deploy/custom-domains).

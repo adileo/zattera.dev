@@ -2593,7 +2593,7 @@ Phase 7 · Depends: T-72 · Size: M
 correct SigV4), Hetzner + DO via raw REST. Fake-API unit tests each.
 **Acceptance:** `go test ./internal/daemon/dnsproviders/`
 
-### T-74 — Alert engine + notifiers
+### T-74 — Alert engine + notifiers  ✅ **DONE**
 Phase 7 · Depends: T-59, T-07 · Size: L
 **Files:** `internal/daemon/notify/{engine.go,webhook.go,slack.go,email.go}`,
 `internal/daemon/api/alerts.go`, `internal/cli/alerts.go`, tests
@@ -2614,6 +2614,11 @@ the flakiest — always best-effort.
 **Tests:** unit — rule evaluation with fake TSDB (threshold+sustained),
 dedupe window, webhook payload golden + HMAC, event-rule matching.
 **Acceptance:** `go test ./internal/daemon/notify/`
+**Follow-up (noted):** the engine + default rules ship, but only `deploy.failed`
+is emitted today. Emit `node.down` (from the liveness monitor on a durable DOWN
+transition), `backup.failed` (BackupService.TriggerBackup error path), and
+`cert.renew_failed` (ACME renewal failure in tlsmgr) so the remaining built-in
+event rules fire. Small, spread across those subsystems.
 
 ### T-75 — Preview environments (PR → preview-*)
 Phase 7 · Depends: T-37, T-45 · Size: M
@@ -2959,6 +2964,54 @@ reviewed in the PR.
 
 ---
 
+# Phase 9 — Follow-ups
+
+### T-91 — Never lose short-lived job logs (harvest-on-exit)
+Phase 9 · Depends: T-53, T-40 · Size: S
+**Problem:** job logs are captured only by `agent.LogCapture`, which polls every
+3s and starts a follower *only* for containers observed `Running`
+(`internal/daemon/agent/logcapture.go`). A one-shot job (T-53) whose whole
+lifetime falls inside a 3s poll gap is never seen running, so no follower ever
+starts; the scheduler then reaps the assignment and the executor
+force-`RemoveContainer`s it (`internal/daemon/agent/executor.go` `stopAndRemove`)
+without reading its output. Result: sub-~3s / sub-second job logs are lost
+non-deterministically. Builds don't have this (they stream `BuildEvent`s
+synchronously); jobs must not either. Invariant: **a job's stdout/stderr is
+never lost, regardless of how briefly it runs.**
+**Files:** `internal/daemon/agent/executor.go`,
+`internal/daemon/agent/logcapture.go` (or a small helper),
+`internal/daemon/agent/executor_test.go`
+**Steps:**
+1. Harvest-on-exit: before the executor removes a container that carries a
+   `job_id` (in `stopAndRemove`, and on the exit path in `pollLiveness` once a
+   job container is observed STOPPED/FAILED), do a synchronous non-follow read
+   `rt.Logs(ctx, id, LogsOptions{Follow:false})` and `store.Append` every entry
+   to the assignment's stream. Docker retains the json-file until removal, so
+   this captures the full output even when no follower ran. Guard against
+   double-capture when a follower *did* run (dedupe by (time,stderr,line) tail,
+   or only harvest when no follower was ever registered for the assignment —
+   ask LogCapture).
+2. Make harvest idempotent + ordered: harvested entries must land before the
+   container is removed; never block the reconcile loop for more than a bounded
+   read timeout (e.g. 2s) — on timeout, log a warning and proceed with removal
+   (best-effort, matching the logstore's fsync-less contract).
+3. Optional hardening (do only if step 1 proves racy): start the follower
+   event-driven in `bringUp` at container creation instead of relying on the 3s
+   poll, so the running window is never missed for services either.
+**Gotchas:** don't harvest twice (follower + harvest) — pick a single owner per
+assignment; the stream key is the **assignment id**, not `job/<id>` (the
+`job/<id>` convention in `logstore/store.go` is documented but unused — either
+wire it or fix the comment); force-remove must not race the harvest read
+(harvest, then remove); keep it best-effort so a hung `docker logs` never
+wedges the executor.
+**Tests:** unit — a fake runtime whose job container exits before any
+LogCapture poll could observe it `Running`; assert every emitted line is present
+in the logstore after reap. Add a sub-second job case and a
+job-that-outlives-a-poll case (must not duplicate lines).
+**Acceptance:** `go test ./internal/daemon/agent/ -run TestJobLog`
+
+---
+
 # Backlog (M4/M5 — do not implement now)
 
 - **M4:** SSO/OIDC login; wildcard certs via DNS-01 (libdns providers);
@@ -2985,4 +3038,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
 P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
+P9: T-91(53,40)
 ```

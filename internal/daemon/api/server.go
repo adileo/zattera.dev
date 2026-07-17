@@ -59,6 +59,7 @@ type Options struct {
 	JobService     zatterav1.JobServiceServer
 	VolumeService  zatterav1.VolumeServiceServer
 	BackupService  zatterav1.BackupServiceServer
+	AlertService   zatterav1.AlertServiceServer
 
 	// Node↔control services (mTLS node identity, no REST gateway).
 	AgentSyncService clusterv1.AgentSyncServiceServer
@@ -296,6 +297,9 @@ func registerGRPC(s *grpc.Server, opts Options) {
 	if opts.BackupService != nil {
 		zatterav1.RegisterBackupServiceServer(s, opts.BackupService)
 	}
+	if opts.AlertService != nil {
+		zatterav1.RegisterAlertServiceServer(s, opts.AlertService)
+	}
 	if opts.AgentSyncService != nil {
 		clusterv1.RegisterAgentSyncServiceServer(s, opts.AgentSyncService)
 	}
@@ -368,6 +372,11 @@ func registerGateway(ctx context.Context, mux *runtime.ServeMux, endpoint string
 	if opts.BackupService != nil {
 		if err := zatterav1.RegisterBackupServiceHandlerFromEndpoint(ctx, mux, endpoint, dialOpts); err != nil {
 			return fmt.Errorf("api: gateway backup: %w", err)
+		}
+	}
+	if opts.AlertService != nil {
+		if err := zatterav1.RegisterAlertServiceHandlerFromEndpoint(ctx, mux, endpoint, dialOpts); err != nil {
+			return fmt.Errorf("api: gateway alert: %w", err)
 		}
 	}
 	return nil

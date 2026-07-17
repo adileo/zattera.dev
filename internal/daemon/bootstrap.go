@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
@@ -131,12 +133,43 @@ func Bootstrap(ctx context.Context, rs *raftstore.Store, opts BootstrapOptions) 
 		return nil, err
 	}
 
-	// 5) One-time human-readable output — stdout only, never the logger.
+	// 5) Built-in alert rules (T-74) — deletable defaults, no channels attached
+	// until the operator adds one.
+	for _, r := range defaultAlertRules(now) {
+		if err := apply(ctx, rs, &clusterv1.Command{Mutation: &clusterv1.Command_PutAlertRule{
+			PutAlertRule: &clusterv1.PutAlertRule{Rule: r},
+		}}); err != nil {
+			return nil, fmt.Errorf("bootstrap: alert rule %q: %w", r.GetName(), err)
+		}
+	}
+
+	// 6) One-time human-readable output — stdout only, never the logger.
 	fmt.Fprintf(out, "Bootstrap admin token: %s\n", tokenStr)
 	fmt.Fprintf(out, "Recovery passphrase (STORE THIS SAFELY): %s\n", passphrase)
 
 	log.Info("cluster bootstrapped", "org", defaultOrgName, "admin", adminEmail)
 	return keyring, nil
+}
+
+// defaultAlertRules are the built-in rules created at bootstrap (T-74). They
+// carry no channels until an operator attaches one, and are deletable.
+func defaultAlertRules(now *timestamppb.Timestamp) []*zatterav1.AlertRule {
+	event := func(name, kind string) *zatterav1.AlertRule {
+		return &zatterav1.AlertRule{Meta: newMeta(ids.New(), now), Name: name, EventKind: kind}
+	}
+	return []*zatterav1.AlertRule{
+		event("deploy-failed", "deploy.failed"),
+		event("node-down", "node.down"),
+		event("cert-renew-failed", "cert.renew_failed"),
+		event("backup-failed", "backup.failed"),
+		{
+			Meta: newMeta(ids.New(), now), Name: "disk-full",
+			Metric: &zatterav1.MetricCondition{
+				Metric: "disk_percent", Scope: "cluster", Op: ">", Threshold: 90,
+				Sustained: durationpb.New(5 * time.Minute),
+			},
+		},
+	}
 }
 
 // apply stamps a command with request id / actor / time and proposes it

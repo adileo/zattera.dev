@@ -43,6 +43,7 @@ import (
 	"github.com/zattera-dev/zattera/internal/daemon/logstore"
 	"github.com/zattera-dev/zattera/internal/daemon/mesh"
 	"github.com/zattera-dev/zattera/internal/daemon/nodeinfo"
+	"github.com/zattera-dev/zattera/internal/daemon/notify"
 	"github.com/zattera-dev/zattera/internal/daemon/proxy"
 	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
 	crt "github.com/zattera-dev/zattera/internal/daemon/runtime"
@@ -416,6 +417,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 		JobService:        api.NewJobServer(st, rs, clk),
 		VolumeService:     volumeSrv,
 		BackupService:     backupSrv,
+		AlertService:      api.NewAlertServer(st, rs, sealer, clk),
 		AgentSyncService:  syncSrv,
 		JoinService:       joinSrv,
 		MeshService:       api.NewMeshServer(st, rs, clk, log),
@@ -478,6 +480,17 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 	// envs off in-flight request counts; it owns those envs instead of the
 	// resource autoscaler and scale-to-zero loop.
 	go scheduler.NewServerless(rs, live, clk, log).Run(ctx)
+
+	// Alert engine (T-74): the leader evaluates alert rules against live metrics
+	// and events and delivers notifications. Needs the data key to unseal channel
+	// secrets, so it runs only on an unsealed node.
+	if sealer != nil {
+		alertEngine := notify.NewEngine(notify.Config{
+			Store: st, Metrics: liveMetrics{live: live}, Opener: sealer, Clock: clk, Logger: log,
+			EmitEvent: alertEventEmitter(rs, clk, log),
+		})
+		go runAlertEngine(ctx, rs, alertEngine, clk)
+	}
 
 	// Scheduled volume snapshots (T-65): the leader fires SnapshotPolicy.schedule
 	// snapshots and enforces keep_last. Only when snapshots are available.
