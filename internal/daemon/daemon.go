@@ -474,6 +474,11 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 	// zero replicas after its idle_timeout; the activator (T-70) wakes it.
 	go scheduler.NewScaleToZero(rs, live, clk, log).Run(ctx)
 
+	// Serverless concurrency scaling (T-71): the leader scales max_concurrency
+	// envs off in-flight request counts; it owns those envs instead of the
+	// resource autoscaler and scale-to-zero loop.
+	go scheduler.NewServerless(rs, live, clk, log).Run(ctx)
+
 	// Scheduled volume snapshots (T-65): the leader fires SnapshotPolicy.schedule
 	// snapshots and enforces keep_last. Only when snapshots are available.
 	if snapDispatcher != nil {

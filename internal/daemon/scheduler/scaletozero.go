@@ -94,6 +94,9 @@ func (s *ScaleToZero) evaluateEnv(ctx context.Context, st *state.Store, env *zat
 	if !spec.GetScaleToZero() || spec.GetStateful() || env.GetActiveReleaseId() == "" {
 		return nil
 	}
+	if spec.GetMaxConcurrency() > 0 {
+		return nil // the serverless loop (T-71) owns concurrency-scaled envs, incl. cool-to-zero
+	}
 	timeout := env.GetIdleTimeout().AsDuration()
 	if timeout <= 0 {
 		return nil // no idle window configured

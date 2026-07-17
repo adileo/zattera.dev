@@ -92,7 +92,7 @@ func testParkActivateFlush(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "http://app/", nil)
 	done := make(chan bool, 1)
-	go func() { done <- a.Hold(w, r, "e1", "app") }()
+	go func() { done <- a.Hold(w, r, "e1", coldReady(src, r)) }()
 
 	// Activation should be requested promptly.
 	waitFor(t, func() bool { return atomic.LoadInt32(&activated) == 1 }, time.Second)
@@ -121,13 +121,13 @@ func testQueueFullSheds(t *testing.T) {
 	// Occupy the single slot with a request that blocks (endpoint never appears).
 	blocked := httptest.NewRecorder()
 	br := httptest.NewRequest("GET", "http://app/", nil)
-	go func() { _ = a.Hold(blocked, br, "e1", "app") }()
+	go func() { _ = a.Hold(blocked, br, "e1", coldReady(src, br)) }()
 	waitFor(t, func() bool { return a.parkedCount("e1") == 1 }, time.Second)
 
 	// The next one is shed immediately.
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "http://app/", nil)
-	if a.Hold(w, r, "e1", "app") {
+	if a.Hold(w, r, "e1", coldReady(src, r)) {
 		t.Fatal("Hold should shed when the queue is full")
 	}
 	if w.Code != http.StatusServiceUnavailable {
@@ -146,7 +146,7 @@ func testDeadline504(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "http://app/", nil)
-	if a.Hold(w, r, "e1", "app") {
+	if a.Hold(w, r, "e1", coldReady(src, r)) {
 		t.Fatal("Hold should not succeed without an endpoint")
 	}
 	if w.Code != http.StatusGatewayTimeout {
@@ -162,7 +162,7 @@ func testOversizedBody(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "http://app/", nil)
 	r.ContentLength = maxColdBodyBytes + 1
-	if a.Hold(w, r, "e1", "app") {
+	if a.Hold(w, r, "e1", coldReady(src, r)) {
 		t.Fatal("oversized body should be shed")
 	}
 	if w.Code != http.StatusServiceUnavailable {
@@ -195,6 +195,12 @@ func testL7WakesAndProxies(t *testing.T) {
 	if atomic.LoadInt32(&activated) != 1 {
 		t.Fatalf("activation not triggered: %d", activated)
 	}
+}
+
+// coldReady is the scale-to-zero readiness predicate: the route has a healthy
+// endpoint (mirrors L7's cold-start hold).
+func coldReady(src RouteSource, r *http.Request) func() bool {
+	return func() bool { return anyHealthy(matchHTTP(src.Current(), r).GetEndpoints()) }
 }
 
 // parkedCount reads the current parked count for an env (test helper).

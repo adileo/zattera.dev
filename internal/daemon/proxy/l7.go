@@ -96,10 +96,24 @@ func (p *L7) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ep, setCookie := p.selectEndpoint(route, r)
 	if ep == nil {
-		// Scale-to-zero: park the request, wake the env, and retry once an
-		// endpoint appears (T-70). Anything else is a genuine bad gateway.
-		if route.GetScaleToZero() && p.activator != nil {
-			if !p.activator.Hold(w, r, route.GetEnvironmentId(), route.GetHostname()) {
+		// Two hold-and-retry cases share the activator's park queue (T-70/T-71):
+		//   - scale-to-zero cold start: zero healthy endpoints → wake the env.
+		//   - serverless backpressure: healthy endpoints exist but all are at
+		//     their max_concurrency cap → wait for one to free capacity (and nudge
+		//     a scale-up via Activate).
+		// Anything else is a genuine bad gateway.
+		envID := route.GetEnvironmentId()
+		cold := route.GetScaleToZero() && !anyHealthy(route.GetEndpoints())
+		full := route.GetMaxConcurrency() > 0 && anyHealthy(route.GetEndpoints())
+		if p.activator != nil && (cold || full) {
+			ready := func() bool {
+				rt := matchHTTP(p.source.Current(), r)
+				if cold {
+					return anyHealthy(rt.GetEndpoints())
+				}
+				return p.lb.pick(rt.GetEndpoints(), p.rnd, rt.GetMaxConcurrency()) != nil
+			}
+			if !p.activator.Hold(w, r, envID, ready) {
 				return // activator wrote the response (shed / timeout / oversized)
 			}
 			snap = p.source.Current()
@@ -160,7 +174,7 @@ func (p *L7) selectEndpoint(route *clusterv1.HTTPRoute, r *http.Request) (ep *cl
 			}
 		}
 	}
-	ep = p.lb.pick(route.GetEndpoints(), p.rnd)
+	ep = p.lb.pick(route.GetEndpoints(), p.rnd, route.GetMaxConcurrency())
 	if ep == nil {
 		return nil, ""
 	}

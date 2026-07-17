@@ -43,26 +43,32 @@ func (b *balancer) acquire(addr string) func() {
 }
 
 // pick chooses a healthy endpoint via P2C. rnd(n) returns a value in [0,n);
-// it is injected for deterministic tests. Returns nil when none are healthy.
-func (b *balancer) pick(eps []*clusterv1.Endpoint, rnd func(n int) int) *clusterv1.Endpoint {
-	var healthy []*clusterv1.Endpoint
+// it is injected for deterministic tests. maxConc>0 caps per-replica in-flight:
+// endpoints already at the cap are skipped (serverless mode, T-71). Returns nil
+// when no endpoint is both healthy and under the cap.
+func (b *balancer) pick(eps []*clusterv1.Endpoint, rnd func(n int) int, maxConc uint32) *clusterv1.Endpoint {
+	var avail []*clusterv1.Endpoint
 	for _, e := range eps {
-		if e.GetHealthy() {
-			healthy = append(healthy, e)
+		if !e.GetHealthy() {
+			continue
 		}
+		if maxConc > 0 && b.load(e.GetAddr()) >= int64(maxConc) {
+			continue // replica is at its concurrency cap
+		}
+		avail = append(avail, e)
 	}
-	switch len(healthy) {
+	switch len(avail) {
 	case 0:
 		return nil
 	case 1:
-		return healthy[0]
+		return avail[0]
 	}
-	i := rnd(len(healthy))
-	j := rnd(len(healthy) - 1)
+	i := rnd(len(avail))
+	j := rnd(len(avail) - 1)
 	if j >= i { // make the two picks distinct
 		j++
 	}
-	a, c := healthy[i], healthy[j]
+	a, c := avail[i], avail[j]
 	la, lc := b.load(a.GetAddr()), b.load(c.GetAddr())
 	if la != lc {
 		if la < lc {
@@ -78,4 +84,16 @@ func (b *balancer) pick(eps []*clusterv1.Endpoint, rnd func(n int) int) *cluster
 		return c
 	}
 	return a
+}
+
+// anyHealthy reports whether the route has at least one healthy endpoint,
+// regardless of concurrency load — distinguishes "cold" (scale-to-zero) from
+// "all replicas at capacity" (serverless backpressure).
+func anyHealthy(eps []*clusterv1.Endpoint) bool {
+	for _, e := range eps {
+		if e.GetHealthy() {
+			return true
+		}
+	}
+	return false
 }

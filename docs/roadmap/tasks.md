@@ -2553,7 +2553,7 @@ request to reach the leader's ingress; fold into the T-55b multi-control HA work
 (b) cold-start latency is accumulated on the proxy Activator (`ColdStart()`) but
 not yet surfaced in `zt stats` — small follow-up.
 
-### T-71 — Serverless concurrency autoscaling
+### T-71 — Serverless concurrency autoscaling  ✅ **DONE**
 Phase 7 · Depends: T-70, T-61 · Size: M
 **Files:** `internal/daemon/scheduler/serverless.go`, tests
 **Steps:**

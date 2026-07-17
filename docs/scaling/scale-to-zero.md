@@ -5,9 +5,7 @@ description: Idle apps scale to zero replicas and wake on request — work in pr
 
 # Scale to zero & serverless
 
-::: callout warning Partly implemented
-Idle **scale-down** and **wake-on-request** both work: an idle app cools to 0 replicas and the next request transparently starts it back up. Serverless concurrency mode (`max_concurrency`) is still on the roadmap (T-71).
-:::
+Idle **scale-down** and **wake-on-request** both work — an idle app cools to 0 replicas and the next request transparently starts it back up — and **serverless concurrency mode** (`max_concurrency`) scales replicas on in-flight request volume.
 
 Turn it on per environment in `zattera.toml`:
 
@@ -34,3 +32,18 @@ Guardrails:
 - **Bounded queue** — at most 100 requests wait per env during a cold start; beyond that the proxy sheds with `503 Retry-After: 2`.
 - **Deadline** — a held request that sees no endpoint within 60s gets `504`.
 - **Body cap** — requests with a body larger than 10 MiB are refused during cold start so a slow upload can't tie up a wake slot.
+
+## Serverless concurrency mode
+
+Set `max_concurrency` to scale on **in-flight requests per replica** instead of CPU/memory/RPS — the model for request-bound workloads:
+
+```toml
+[env.production]
+max_concurrency = 20     # target in-flight requests per replica
+scale_to_zero   = true   # optional: cool to zero when idle
+min_replicas    = 0
+max_replicas    = 10
+```
+
+- **Scaling** — the leader targets `ceil(total_in_flight / max_concurrency)` replicas, re-evaluated every 5s (tighter than the resource autoscaler), clamped to `[min, max]` — or `[0, max]` when `scale_to_zero` is set, so an idle serverless env cools to zero and wakes on request. A `max_concurrency` env is owned by this loop, not the CPU/RPS autoscaler.
+- **Backpressure** — the ingress skips any replica already at `max_concurrency` when load-balancing. When *all* replicas are at the cap, the request is held (reusing the wake queue) until one frees capacity or a new replica comes up — the same 100-request / 60s / `503`-shed guardrails as cold start.

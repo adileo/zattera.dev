@@ -125,6 +125,9 @@ func (a *Autoscaler) evaluateEnv(ctx context.Context, st *state.Store, env *zatt
 	if !autoscaleConfigured(auto) || env.GetActiveReleaseId() == "" {
 		return nil
 	}
+	if env.GetService().GetMaxConcurrency() > 0 {
+		return nil // the serverless loop (T-71) owns concurrency-scaled envs
+	}
 	// A running deployment (T-26) owns placement; don't fight it.
 	if a.deploymentActive(st, envID) {
 		return nil

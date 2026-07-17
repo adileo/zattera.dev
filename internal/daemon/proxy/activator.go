@@ -3,11 +3,9 @@ package proxy
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
-	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 )
 
@@ -18,6 +16,11 @@ const (
 	// defaultHoldTimeout bounds how long a parked request waits for an endpoint
 	// before giving up with 504.
 	defaultHoldTimeout = 60 * time.Second
+	// holdPoll re-checks readiness while parked. Route updates wake the wait for
+	// a new endpoint (cold start); the poll catches capacity freeing up as
+	// in-flight requests drain (serverless backpressure), which is not a route
+	// event.
+	holdPoll = 25 * time.Millisecond
 	// maxColdBodyBytes caps the request body accepted during a cold start: a large
 	// upload must not tie up a scarce park slot while the app spins up.
 	maxColdBodyBytes = 10 << 20 // 10 MiB
@@ -62,11 +65,14 @@ func NewActivator(source RouteSource, activate ActivateFunc, clk clock.Clock) *A
 	}
 }
 
-// Hold parks a request for a scaled-to-zero env until an endpoint appears. It
-// returns true when the caller should re-select an endpoint and proxy; false
-// when the activator has already written a response (503 shed, 504 timeout, or
-// oversized body).
-func (a *Activator) Hold(w http.ResponseWriter, r *http.Request, envID string, hostname string) bool {
+// Hold parks a request for an env until ready() reports the caller may proceed
+// — a healthy endpoint appearing (scale-to-zero cold start) or a replica
+// freeing capacity (serverless backpressure). It triggers activation (which
+// nudges the scheduler to add replicas) and waits on route updates plus a short
+// poll. Returns true when the caller should re-select an endpoint and proxy;
+// false when the activator has already written a response (503 shed, 504
+// timeout, or oversized body).
+func (a *Activator) Hold(w http.ResponseWriter, r *http.Request, envID string, ready func() bool) bool {
 	// A large body must not occupy a park slot during cold start.
 	if r.ContentLength > maxColdBodyBytes {
 		writeProxyError(w, http.StatusServiceUnavailable, "request too large during cold start")
@@ -83,8 +89,8 @@ func (a *Activator) Hold(w http.ResponseWriter, r *http.Request, envID string, h
 	start := a.clk.Now()
 	a.triggerActivate(r.Context(), envID)
 
-	// Endpoint may already exist (raced with another request's activation).
-	if hasHealthyEndpoint(a.source.Current(), hostname, envID) {
+	// May already be ready (raced with another request's activation / a drain).
+	if ready() {
 		a.cold.record(a.clk.Now().Sub(start))
 		return true
 	}
@@ -92,6 +98,8 @@ func (a *Activator) Hold(w http.ResponseWriter, r *http.Request, envID string, h
 	ctx, cancel := context.WithTimeout(r.Context(), a.holdTimeout)
 	defer cancel()
 	updates := a.source.Updates(ctx)
+	poll := time.NewTicker(holdPoll)
+	defer poll.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -101,12 +109,17 @@ func (a *Activator) Hold(w http.ResponseWriter, r *http.Request, envID string, h
 			}
 			writeProxyError(w, http.StatusGatewayTimeout, "activation timed out")
 			return false
-		case snap, ok := <-updates:
+		case _, ok := <-updates:
 			if !ok {
 				writeProxyError(w, http.StatusGatewayTimeout, "activation stream closed")
 				return false
 			}
-			if hasHealthyEndpoint(snap, hostname, envID) {
+			if ready() {
+				a.cold.record(a.clk.Now().Sub(start))
+				return true
+			}
+		case <-poll.C:
+			if ready() {
 				a.cold.record(a.clk.Now().Sub(start))
 				return true
 			}
@@ -168,24 +181,6 @@ func (a *Activator) triggerActivate(ctx context.Context, envID string) {
 func (a *Activator) ColdStart() (count uint64, avg time.Duration, max time.Duration) {
 	return a.cold.snapshot()
 }
-
-// hasHealthyEndpoint reports whether the snapshot has a healthy endpoint for the
-// route (matched by hostname, falling back to environment id).
-func hasHealthyEndpoint(snap *clusterv1.RouteSnapshot, hostname, envID string) bool {
-	for _, rt := range snap.GetHttpRoutes() {
-		if !equalHost(rt.GetHostname(), hostname) && rt.GetEnvironmentId() != envID {
-			continue
-		}
-		for _, ep := range rt.GetEndpoints() {
-			if ep.GetHealthy() {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func equalHost(a, b string) bool { return a != "" && b != "" && strings.EqualFold(a, b) }
 
 // coldStartStats accumulates cold-start latencies (thread-safe).
 type coldStartStats struct {

@@ -141,7 +141,7 @@ func (ll *l4Listener) serve() {
 func (l *L4) handle(client net.Conn, route *clusterv1.L4Route) {
 	defer func() { _ = client.Close() }()
 
-	ep := l.lb.pick(route.GetEndpoints(), l.rnd)
+	ep := l.lb.pick(route.GetEndpoints(), l.rnd, 0)
 	if ep == nil {
 		return // no healthy backend; drop the connection
 	}
