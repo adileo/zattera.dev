@@ -1,18 +1,27 @@
 ---
 title: Backup & disaster recovery
-description: Incremental S3 snapshots and one-command full-platform restore — work in progress.
+description: Incremental, encrypted S3 volume snapshots and one-command full-platform restore.
 ---
 
 # Backup & disaster recovery
 
-Both volume snapshots (T-64/T-65) and full-platform backup + `zatterad restore`
-(T-66) have landed.
+Zattera backs up both **volume data** (incremental, deduplicated, encrypted
+snapshots) and the **whole control plane** (state + CA + keys) to any
+S3-compatible bucket, and rebuilds a cluster from a backup with a single
+`zatterad restore`.
+
+::: callout warning Configuring the destination is not wired yet
+Snapshots and backups read a cluster-wide `BackupConfig` (S3 endpoint, bucket,
+and credentials, encrypted at rest), but the API/CLI to **set** it
+(`BackupService.SetBackupConfig`) is still on the [roadmap](../roadmap/tasks).
+Until it ships, the snapshot and restore commands below have no destination to
+write to; the [`zatterad restore`](#disaster-recovery) path takes its S3 target
+directly on the command line and works today.
+:::
 
 ## Volume snapshots
 
-Configure a destination bucket once (cluster-wide `BackupConfig`: S3 endpoint,
-bucket, and credentials, which are encrypted at rest), then snapshot on demand or
-on a schedule:
+With a destination configured, snapshot a volume on demand or on a schedule:
 
 ```bash
 zattera volume snapshot <id>            # take one now, waits for completion
@@ -33,7 +42,7 @@ A snapshot runs on the volume's pinned node: the control plane dials that node,
 which streams progress back. Restore refuses while the volume is mounted — stop
 the service (scale its environment to 0) first.
 
-## The snapshot engine (T-64)
+## The snapshot engine
 
 Volume snapshots are **content-addressed and deduplicated**, so an incremental
 snapshot only uploads what changed:
@@ -53,9 +62,9 @@ snapshot only uploads what changed:
    every manifest and deletes only orphaned chunks (shared chunks survive).
 
 The engine (`internal/daemon/volumes`) operates on an already-quiesced path;
-quiescing a live database with a pre-hook is the scheduling layer's job (T-65).
+quiescing a live database is the `pre_hook`'s job (above).
 
-## Disaster recovery (T-66)
+## Disaster recovery
 
 A full backup captures the whole control plane to the same S3 bucket:
 

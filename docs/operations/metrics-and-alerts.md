@@ -1,17 +1,17 @@
 ---
 title: Metrics & alerts
-description: Historical metrics and webhook/Slack/email alerting — work in progress.
+description: Live and historical metrics; webhook/Slack/email alerting is on the roadmap.
 ---
 
 # Metrics & alerts
 
 ::: callout warning Work in progress
-The alert engine (T-74) is on the [roadmap](../roadmap/tasks) and not implemented yet. Historical metrics (T-59 + T-60) have landed.
+The alert engine is on the [roadmap](../roadmap/tasks) and not implemented yet. Historical metrics have landed.
 :::
 
 **What it will do:** alert rules firing to webhook/Slack/email channels.
 
-**What works today:** every node runs an embedded ring TSDB (T-59) — a metrics sampler records node CPU/memory/disk/net, per-instance CPU/memory/network, and per-env proxy series (RPS, in-flight, error rate, p50/p99 latency) every 15s into a two-resolution ring buffer (15s for 24h, 5m for 30d) that survives restarts (`<data-dir>/metrics/tsdb.bin`).
+**What works today:** every node runs an embedded ring TSDB — a metrics sampler records node CPU/memory/disk/net, per-instance CPU/memory/network, and per-env proxy series (RPS, in-flight, error rate, p50/p99 latency) every 15s into a two-resolution ring buffer (15s for 24h, 5m for 30d) that survives restarts (`<data-dir>/metrics/tsdb.bin`).
 
 - **Current values** — `zattera stats` (per node) or `zattera stats --app NAME` (per env) reads the latest heartbeat.
 - **History** — `zattera stats --since 1h [--step 5m]` reads the TSDB: the control plane fans the query out to each relevant node's local store and merges the series (node series per node; env series sum RPS/in-flight and average CPU/latency across instances). The CLI renders each series as a sparkline; `--json` returns the raw points. Scope it with `--node ID`, `--app NAME`, or leave it cluster-wide.

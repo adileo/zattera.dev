@@ -9,11 +9,9 @@ Zattera gives stateful services (Postgres, Redis, …) a **node-pinned** persist
 volume — honest single-writer semantics, no fake distributed storage. A volume
 lives on exactly one node; the service that mounts it is pinned to that node.
 
-::: callout warning Work in progress
-Snapshots and `volume browse`/`cp` (T-64/T-65/T-77) are still on the
-[roadmap](../roadmap/tasks). Volume lifecycle, pinning, the fencing lease and the
-`zattera volume` CLI (T-62) have landed.
-:::
+Volume lifecycle, pinning, the single-writer fencing lease, the `zattera volume`
+CLI and [snapshots to S3](backup-restore) are all available. Browsing a volume's
+files (`volume browse`/`cp`) is still on the [roadmap](../roadmap/tasks).
 
 ## Declare a volume
 
@@ -37,10 +35,14 @@ on that node. You can also manage volumes explicitly:
 zattera volume create data --app api --env production  # picks a node, or --node <id>
 zattera volume ls                                       # ID, NAME, ENV, NODE, STATUS
 zattera volume rm <id>                                  # refused while the service runs
+zattera volume snapshot <id>                            # snapshot now (see Backup & DR)
+zattera volume snapshots <id>                           # list snapshots
+zattera volume restore <id> --snapshot <snap-id>        # service must be stopped
 ```
 
 Deleting a volume removes its record and best-effort deletes the underlying
-docker volume on its node (a down node leaves it to be reaped later).
+docker volume on its node (a down node leaves it to be reaped later). Snapshots,
+scheduling and retention are covered in [Backup & disaster recovery](backup-restore).
 
 ## Single-writer fencing
 
@@ -81,4 +83,5 @@ owns auto-create, pinning, `NODE_LOST` tracking and lease renewal
 (`internal/daemon/scheduler/volumes.go`); the agent enforces the lease before
 starting a container (`internal/daemon/agent/executor.go`); the deployment
 orchestrator runs the stop-then-start machine for stateful releases
-(`internal/daemon/scheduler/stateful.go`). Snapshots back up to S3 (T-64/T-65).
+(`internal/daemon/scheduler/stateful.go`). Snapshots back up to S3 — see
+[Backup & disaster recovery](backup-restore).
