@@ -7,6 +7,7 @@ import (
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
+	"github.com/zattera-dev/zattera/internal/daemon/runtime"
 )
 
 // LocalServer composes the node-local AgentLocalService methods that the control
@@ -22,13 +23,25 @@ type LocalServer struct {
 	exec  *ExecServer
 	logs  *LogServer
 	stats *StatsServer
+	rt    runtime.ContainerRuntime
 }
 
 // NewLocalServer builds the composite. Any sub-server may be nil (e.g. a
 // non-builder node passes build=nil); the corresponding methods then report
-// Unimplemented via the embedded base.
-func NewLocalServer(build *BuildServer, exec *ExecServer, logs *LogServer, stats *StatsServer) *LocalServer {
-	return &LocalServer{build: build, exec: exec, logs: logs, stats: stats}
+// Unimplemented via the embedded base. rt backs the volume data-path ops.
+func NewLocalServer(build *BuildServer, exec *ExecServer, logs *LogServer, stats *StatsServer, rt runtime.ContainerRuntime) *LocalServer {
+	return &LocalServer{build: build, exec: exec, logs: logs, stats: stats, rt: rt}
+}
+
+// RemoveVolume deletes the node-local docker volume for a deleted Volume (T-62).
+func (s *LocalServer) RemoveVolume(ctx context.Context, req *clusterv1.AgentRemoveVolumeRequest) (*clusterv1.AgentRemoveVolumeResponse, error) {
+	if s.rt == nil {
+		return s.UnimplementedAgentLocalServiceServer.RemoveVolume(ctx, req)
+	}
+	if err := s.rt.RemoveVolume(ctx, volumeName(req.GetEnvironmentId(), req.GetVolumeName())); err != nil {
+		return nil, err
+	}
+	return &clusterv1.AgentRemoveVolumeResponse{}, nil
 }
 
 // QueryLogs dispatches to the log sub-server.

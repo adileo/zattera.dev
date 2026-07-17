@@ -10,9 +10,9 @@ volume — honest single-writer semantics, no fake distributed storage. A volume
 lives on exactly one node; the service that mounts it is pinned to that node.
 
 ::: callout warning Work in progress
-The `zattera volume` CLI, snapshots and `volume browse`/`cp` (T-64/T-65/T-77) are
-still on the [roadmap](../roadmap/tasks). Volume lifecycle, pinning and the
-fencing lease (T-62) have landed and are reachable over the API today.
+Snapshots and `volume browse`/`cp` (T-64/T-65/T-77) are still on the
+[roadmap](../roadmap/tasks). Volume lifecycle, pinning, the fencing lease and the
+`zattera volume` CLI (T-62) have landed.
 :::
 
 ## Declare a volume
@@ -31,13 +31,16 @@ mount_path = "/var/lib/postgresql/data"
 
 The scheduler auto-creates the volume the first time it places the service,
 pinning it to the least-used healthy node. From then on the service always runs
-on that node. You can also pre-create one explicitly:
+on that node. You can also manage volumes explicitly:
 
 ```bash
-zattera volume create data --env production   # picks a node, or --node <id>
-zattera volume ls
-zattera volume rm <id>                         # refused while the service runs
+zattera volume create data --app api --env production  # picks a node, or --node <id>
+zattera volume ls                                       # ID, NAME, ENV, NODE, STATUS
+zattera volume rm <id>                                  # refused while the service runs
 ```
+
+Deleting a volume removes its record and best-effort deletes the underlying
+docker volume on its node (a down node leaves it to be reaped later).
 
 ## Single-writer fencing
 

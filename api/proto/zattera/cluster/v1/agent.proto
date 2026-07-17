@@ -205,7 +205,17 @@ service AgentLocalService {
   rpc ListVolumeFiles(AgentListFilesRequest) returns (AgentListFilesResponse);
   rpc ReadVolumeFile(AgentReadFileRequest) returns (stream TCPChunk);
   rpc WriteVolumeFile(stream AgentWriteFileChunk) returns (AgentWriteFileResponse);
+  // RemoveVolume deletes the named docker volume on this node (T-62 DeleteVolume
+  // cleanup; best effort — the control plane ignores failures).
+  rpc RemoveVolume(AgentRemoveVolumeRequest) returns (AgentRemoveVolumeResponse);
 }
+
+message AgentRemoveVolumeRequest {
+  string environment_id = 1;
+  string volume_name = 2; // logical name; the agent derives the docker volume name
+}
+
+message AgentRemoveVolumeResponse {}
 
 message AgentExecInput {
   AgentExecStart start = 1; // first message only

@@ -2193,7 +2193,7 @@ min≥1 here when min>0; leadership change resets in-memory hold timers
 after sustained low + cooldown, freeze on missing data, clamping.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestAutoscaler`
 
-### T-62 — Volumes: objects, leases, mounts  ✅ **DONE** (CLI → T-77/T-78)
+### T-62 — Volumes: objects, leases, mounts  ✅ **DONE**
 Phase 6 · Depends: T-24, T-15 · Size: L
 **Landed:**
 - **VolumeService CRUD** (`internal/daemon/api/volumes.go`): CreateVolume (pins
@@ -2218,6 +2218,13 @@ Phase 6 · Depends: T-24, T-15 · Size: L
   start a stateful+volume container unless the lease names THIS node and THIS
   assignment (reports PENDING, not FAILED, so it starts once the lease lands).
 - **Agent mounts** were already in place (executor `EnsureVolume` + `Mounts`).
+- **DeleteVolume docker cleanup**: new `AgentLocalService.RemoveVolume` RPC
+  (regen) → `LocalServer.RemoveVolume` calls `runtime.RemoveVolume`;
+  `VolumeServer.DeleteVolume` best-effort dials the volume's node
+  (`GRPCVolumeAgentDialer`, 3s timeout) after the state delete — a down node just
+  leaves an orphan, never failing the delete.
+- **CLI**: `zattera volume ls/create/rm` (`internal/cli/volumes.go`) over the
+  VolumeService client, wired into root.
 **Tests:** `TestVolumeLease` (scheduler: auto-create+pin, lease acquire/renew
 with fake clock, NODE_LOST + no reschedule + lease lapse, recovery),
 `TestLeaseHelpers`; `TestExecutorVolumeFencing`/`TestLeaseWithholds` (agent:
@@ -2225,8 +2232,9 @@ starts only on a matching lease, withholds on foreign/absent/other-instance
 lease — real fakeruntime container counts); `TestVolumeServer*` (api CRUD +
 refuse-while-mounted); chaos `TestVolumeFencing` (node dies → NODE_LOST, invariant
 held: never a second RUN replica, never migrated off the dead node).
-**Deferred:** the `zattera volume` CLI (create/ls/rm) → T-77/T-78; DeleteVolume's
-best-effort docker-volume removal on the node (needs an agent RPC) → T-77.
+**Follow-on (still open):** `volume browse`/`cp` read-only file access (T-77) and
+snapshots (T-64/T-65) — the `SnapshotVolume`/`RestoreVolume`/file RPCs stay
+Unimplemented until then.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestVolumeLease` ✅;
 `go test -tags chaos ./test/chaos/` ✅.
 **Original spec below.**

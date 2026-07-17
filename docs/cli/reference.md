@@ -83,6 +83,16 @@ Defaults to `--env production`. See [Jobs](../operations/jobs).
 | `zt jobs run [app] [--max-retries N] [--no-wait] -- <command…>` | One-shot job in the env's active release image; waits and exits with the job's exit code |
 | `zt jobs ls [app] [--env NAME]` | Recent jobs: status, exit code, attempt, command |
 
+## Volumes
+
+Node-pinned persistent volumes for stateful services. See [Volumes](../data/volumes).
+
+| Command | Description |
+| --- | --- |
+| `zt volume ls` | List the project's volumes: id, name, env, node, status |
+| `zt volume create <name> [--app NAME] [--env NAME] [--node ID]` | Create a volume (pins to `--node` or the least-used healthy node) |
+| `zt volume rm <id>` | Delete a volume (refused while its service is running) |
+
 ## Custom domains
 
 Defaults to `--env staging`. See [Custom domains](../deploy/custom-domains).

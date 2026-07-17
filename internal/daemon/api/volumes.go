@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -15,6 +18,16 @@ import (
 	"github.com/zattera-dev/zattera/internal/state"
 )
 
+// volumeRemoveTimeout bounds the best-effort docker-volume cleanup so a slow or
+// down node never stalls a DeleteVolume response.
+const volumeRemoveTimeout = 3 * time.Second
+
+// VolumeAgentDialer removes a deleted volume's docker volume on its pinned node
+// (best effort; nil disables the cleanup). Production dials AgentLocalService.
+type VolumeAgentDialer interface {
+	RemoveVolume(ctx context.Context, node *zatterav1.Node, envID, volumeName string) error
+}
+
 // VolumeServer implements the CRUD subset of VolumeService (T-62). Snapshot,
 // restore and file operations land in later tasks (T-64/T-65/T-77).
 type VolumeServer struct {
@@ -22,14 +35,20 @@ type VolumeServer struct {
 	store *state.Store
 	raft  Applier
 	clock clock.Clock
+	dial  VolumeAgentDialer
+	log   *slog.Logger
 }
 
-// NewVolumeServer builds the volume service.
-func NewVolumeServer(store *state.Store, raft Applier, clk clock.Clock) *VolumeServer {
+// NewVolumeServer builds the volume service. dial removes the docker volume on
+// its node when the volume is deleted (best effort; nil skips that cleanup).
+func NewVolumeServer(store *state.Store, raft Applier, dial VolumeAgentDialer, clk clock.Clock, log *slog.Logger) *VolumeServer {
 	if clk == nil {
 		clk = clock.Real{}
 	}
-	return &VolumeServer{store: store, raft: raft, clock: clk}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &VolumeServer{store: store, raft: raft, clock: clk, dial: dial, log: log}
 }
 
 // CreateVolume creates a named volume pinned to a node. When node_id is empty
@@ -94,7 +113,27 @@ func (s *VolumeServer) DeleteVolume(ctx context.Context, req *zatterav1.DeleteVo
 	}); err != nil {
 		return nil, toStatus(err)
 	}
+	// Best effort: remove the docker volume on its node. A failure (node down,
+	// no runtime) leaves an orphaned volume but never fails the delete.
+	s.removeDockerVolume(ctx, v)
 	return &emptypb.Empty{}, nil
+}
+
+// removeDockerVolume asks the volume's node to delete the underlying docker
+// volume. Best effort — logged, never fatal.
+func (s *VolumeServer) removeDockerVolume(ctx context.Context, v *zatterav1.Volume) {
+	if s.dial == nil || v.GetNodeId() == "" {
+		return
+	}
+	node, ok := s.store.Node(v.GetNodeId())
+	if !ok {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, volumeRemoveTimeout)
+	defer cancel()
+	if err := s.dial.RemoveVolume(cctx, node, v.GetEnvironmentId(), v.GetName()); err != nil {
+		s.log.Warn("volume: docker cleanup failed (orphaned on node)", "volume", v.GetMeta().GetId(), "node", v.GetNodeId(), "err", err)
+	}
 }
 
 // volumeMounted reports whether the volume is currently in use: an unexpired
@@ -119,6 +158,27 @@ func (s *VolumeServer) apply(ctx context.Context, cmd *clusterv1.Command) error 
 	cmd.Actor = "user:" + id.UserID
 	cmd.Time = timestamppb.New(s.clock.Now())
 	return s.raft.Apply(ctx, cmd)
+}
+
+// GRPCVolumeAgentDialer dials a node's AgentLocalService to remove a docker
+// volume. Connect supplies the per-node mTLS connection.
+type GRPCVolumeAgentDialer struct {
+	Connect func(ctx context.Context, node *zatterav1.Node) (*grpc.ClientConn, error)
+}
+
+// RemoveVolume runs the RemoveVolume RPC against the node, closing the
+// connection after.
+func (g GRPCVolumeAgentDialer) RemoveVolume(ctx context.Context, node *zatterav1.Node, envID, volumeName string) error {
+	conn, err := g.Connect(ctx, node)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	_, err = clusterv1.NewAgentLocalServiceClient(conn).RemoveVolume(ctx, &clusterv1.AgentRemoveVolumeRequest{
+		EnvironmentId: envID,
+		VolumeName:    volumeName,
+	})
+	return err
 }
 
 // leastUsedVolumeNode picks the ALIVE schedulable worker hosting the fewest

@@ -390,7 +390,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 		ExecService:       api.NewExecServer(st, api.GRPCExecDialer{Connect: agentLocalConnect}, log),
 		MetricsService:    api.NewMetricsServer(st, live, api.GRPCStatsDialer{Connect: agentLocalConnect}, clk, log),
 		JobService:        api.NewJobServer(st, rs, clk),
-		VolumeService:     api.NewVolumeServer(st, rs, clk),
+		VolumeService:     api.NewVolumeServer(st, rs, api.GRPCVolumeAgentDialer{Connect: agentLocalConnect}, clk, log),
 		AgentSyncService:  syncSrv,
 		JoinService:       joinSrv,
 		MeshService:       api.NewMeshServer(st, rs, clk, log),
@@ -1173,7 +1173,7 @@ func startAgentLocalServer(ctx context.Context, authority *ca.CA, cfg config.Con
 		Logger:           log,
 	})
 	execSrv := agent.NewExecServer(rt, log)
-	local := agent.NewLocalServer(buildSrv, execSrv, logSrv, statsSrv)
+	local := agent.NewLocalServer(buildSrv, execSrv, logSrv, statsSrv, rt)
 
 	serverTLS, err := authority.ServerTLSConfig([]string{"localhost"}, agentLocalIPs(cfg))
 	if err != nil {

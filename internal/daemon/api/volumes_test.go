@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -13,6 +14,17 @@ import (
 	"github.com/zattera-dev/zattera/internal/state"
 )
 
+// fakeVolumeDialer records RemoveVolume calls and can be made to fail.
+type fakeVolumeDialer struct {
+	calls []string // "node/env/name"
+	err   error
+}
+
+func (f *fakeVolumeDialer) RemoveVolume(_ context.Context, node *zatterav1.Node, envID, name string) error {
+	f.calls = append(f.calls, node.GetMeta().GetId()+"/"+envID+"/"+name)
+	return f.err
+}
+
 func newVolumeHarness(t *testing.T) (*VolumeServer, *state.Store, context.Context) {
 	t.Helper()
 	rs := raftstore.NewTestStore(t)
@@ -23,7 +35,7 @@ func newVolumeHarness(t *testing.T) (*VolumeServer, *state.Store, context.Contex
 	})
 	st.PutApp(&zatterav1.App{Meta: &zatterav1.Meta{Id: "app1"}, Name: "web", ProjectId: "p1"})
 	st.PutEnvironment(&zatterav1.Environment{Meta: &zatterav1.Meta{Id: "e1"}, AppId: "app1", ProjectId: "p1", Name: "production"})
-	srv := NewVolumeServer(st, rs, clock.NewFake())
+	srv := NewVolumeServer(st, rs, nil, clock.NewFake(), nil)
 	ctx := withIdentity(context.Background(), Identity{UserID: "u1"})
 	return srv, st, ctx
 }
@@ -85,6 +97,38 @@ func TestVolumeServerDeleteRefusesWhileMounted(t *testing.T) {
 	st.DeleteAssignments([]string{"a1"})
 	if _, err := srv.DeleteVolume(ctx, &zatterav1.DeleteVolumeRequest{ProjectId: "p1", VolumeId: v.GetMeta().GetId()}); err != nil {
 		t.Fatalf("delete after stop: %v", err)
+	}
+}
+
+func TestVolumeServerDeleteCleansDockerVolume(t *testing.T) {
+	rs := raftstore.NewTestStore(t)
+	st := rs.State()
+	st.PutNode(&zatterav1.Node{Meta: &zatterav1.Meta{Id: "n1"}, Status: zatterav1.NodeStatus_NODE_STATUS_ALIVE, Schedulable: true})
+	st.PutApp(&zatterav1.App{Meta: &zatterav1.Meta{Id: "app1"}, Name: "web", ProjectId: "p1"})
+	st.PutEnvironment(&zatterav1.Environment{Meta: &zatterav1.Meta{Id: "e1"}, AppId: "app1", ProjectId: "p1", Name: "production"})
+	dialer := &fakeVolumeDialer{}
+	srv := NewVolumeServer(st, rs, dialer, clock.NewFake(), nil)
+	ctx := withIdentity(context.Background(), Identity{UserID: "u1"})
+
+	v, err := srv.CreateVolume(ctx, &zatterav1.CreateVolumeRequest{ProjectId: "p1", EnvironmentId: "e1", Name: "data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.DeleteVolume(ctx, &zatterav1.DeleteVolumeRequest{ProjectId: "p1", VolumeId: v.GetMeta().GetId()}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(dialer.calls) != 1 || dialer.calls[0] != "n1/e1/data" {
+		t.Fatalf("docker cleanup calls = %v, want [n1/e1/data]", dialer.calls)
+	}
+
+	// A cleanup failure must not fail the delete (best effort).
+	v2, _ := srv.CreateVolume(ctx, &zatterav1.CreateVolumeRequest{ProjectId: "p1", EnvironmentId: "e1", Name: "data2"})
+	dialer.err = errors.New("node unreachable")
+	if _, err := srv.DeleteVolume(ctx, &zatterav1.DeleteVolumeRequest{ProjectId: "p1", VolumeId: v2.GetMeta().GetId()}); err != nil {
+		t.Fatalf("delete should tolerate cleanup failure, got: %v", err)
+	}
+	if _, ok := st.Volume(v2.GetMeta().GetId()); ok {
+		t.Fatal("volume not deleted despite cleanup error")
 	}
 }
 

@@ -241,6 +241,7 @@ const (
 	AgentLocalService_ListVolumeFiles_FullMethodName = "/zattera.cluster.v1.AgentLocalService/ListVolumeFiles"
 	AgentLocalService_ReadVolumeFile_FullMethodName  = "/zattera.cluster.v1.AgentLocalService/ReadVolumeFile"
 	AgentLocalService_WriteVolumeFile_FullMethodName = "/zattera.cluster.v1.AgentLocalService/WriteVolumeFile"
+	AgentLocalService_RemoveVolume_FullMethodName    = "/zattera.cluster.v1.AgentLocalService/RemoveVolume"
 )
 
 // AgentLocalServiceClient is the client API for AgentLocalService service.
@@ -261,6 +262,9 @@ type AgentLocalServiceClient interface {
 	ListVolumeFiles(ctx context.Context, in *AgentListFilesRequest, opts ...grpc.CallOption) (*AgentListFilesResponse, error)
 	ReadVolumeFile(ctx context.Context, in *AgentReadFileRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TCPChunk], error)
 	WriteVolumeFile(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[AgentWriteFileChunk, AgentWriteFileResponse], error)
+	// RemoveVolume deletes the named docker volume on this node (T-62 DeleteVolume
+	// cleanup; best effort — the control plane ignores failures).
+	RemoveVolume(ctx context.Context, in *AgentRemoveVolumeRequest, opts ...grpc.CallOption) (*AgentRemoveVolumeResponse, error)
 }
 
 type agentLocalServiceClient struct {
@@ -445,6 +449,16 @@ func (c *agentLocalServiceClient) WriteVolumeFile(ctx context.Context, opts ...g
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type AgentLocalService_WriteVolumeFileClient = grpc.ClientStreamingClient[AgentWriteFileChunk, AgentWriteFileResponse]
 
+func (c *agentLocalServiceClient) RemoveVolume(ctx context.Context, in *AgentRemoveVolumeRequest, opts ...grpc.CallOption) (*AgentRemoveVolumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AgentRemoveVolumeResponse)
+	err := c.cc.Invoke(ctx, AgentLocalService_RemoveVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentLocalServiceServer is the server API for AgentLocalService service.
 // All implementations must embed UnimplementedAgentLocalServiceServer
 // for forward compatibility.
@@ -463,6 +477,9 @@ type AgentLocalServiceServer interface {
 	ListVolumeFiles(context.Context, *AgentListFilesRequest) (*AgentListFilesResponse, error)
 	ReadVolumeFile(*AgentReadFileRequest, grpc.ServerStreamingServer[TCPChunk]) error
 	WriteVolumeFile(grpc.ClientStreamingServer[AgentWriteFileChunk, AgentWriteFileResponse]) error
+	// RemoveVolume deletes the named docker volume on this node (T-62 DeleteVolume
+	// cleanup; best effort — the control plane ignores failures).
+	RemoveVolume(context.Context, *AgentRemoveVolumeRequest) (*AgentRemoveVolumeResponse, error)
 	mustEmbedUnimplementedAgentLocalServiceServer()
 }
 
@@ -508,6 +525,9 @@ func (UnimplementedAgentLocalServiceServer) ReadVolumeFile(*AgentReadFileRequest
 }
 func (UnimplementedAgentLocalServiceServer) WriteVolumeFile(grpc.ClientStreamingServer[AgentWriteFileChunk, AgentWriteFileResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method WriteVolumeFile not implemented")
+}
+func (UnimplementedAgentLocalServiceServer) RemoveVolume(context.Context, *AgentRemoveVolumeRequest) (*AgentRemoveVolumeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RemoveVolume not implemented")
 }
 func (UnimplementedAgentLocalServiceServer) mustEmbedUnimplementedAgentLocalServiceServer() {}
 func (UnimplementedAgentLocalServiceServer) testEmbeddedByValue()                           {}
@@ -678,6 +698,24 @@ func _AgentLocalService_WriteVolumeFile_Handler(srv interface{}, stream grpc.Ser
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type AgentLocalService_WriteVolumeFileServer = grpc.ClientStreamingServer[AgentWriteFileChunk, AgentWriteFileResponse]
 
+func _AgentLocalService_RemoveVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AgentRemoveVolumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentLocalServiceServer).RemoveVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentLocalService_RemoveVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentLocalServiceServer).RemoveVolume(ctx, req.(*AgentRemoveVolumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentLocalService_ServiceDesc is the grpc.ServiceDesc for AgentLocalService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -700,6 +738,10 @@ var AgentLocalService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListVolumeFiles",
 			Handler:    _AgentLocalService_ListVolumeFiles_Handler,
+		},
+		{
+			MethodName: "RemoveVolume",
+			Handler:    _AgentLocalService_RemoveVolume_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
