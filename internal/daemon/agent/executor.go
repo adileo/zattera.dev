@@ -150,6 +150,34 @@ func (e *Executor) current() *clusterv1.AssignmentSet {
 	return e.latest
 }
 
+// InstanceStats samples resource usage for every service container this node
+// owns, keyed by instance (assignment) id. It powers the metrics sampler (T-59);
+// a container whose one-shot stat probe fails is skipped rather than failing the
+// whole sweep.
+func (e *Executor) InstanceStats(ctx context.Context) []InstanceMetrics {
+	owned, err := e.listOwned(ctx)
+	if err != nil {
+		e.log.Debug("metrics: list owned containers failed", "err", err)
+		return nil
+	}
+	out := make([]InstanceMetrics, 0, len(owned))
+	for aid, c := range owned {
+		s, err := e.rt.Stats(ctx, c.id)
+		if err != nil {
+			e.log.Debug("metrics: instance stats failed", "instance", aid, "err", err)
+			continue
+		}
+		out = append(out, InstanceMetrics{
+			InstanceID:  aid,
+			CPUPercent:  s.CPUPercent,
+			MemoryBytes: float64(s.MemoryBytes),
+			NetRxBytes:  float64(s.NetRxBytes),
+			NetTxBytes:  float64(s.NetTxBytes),
+		})
+	}
+	return out
+}
+
 // MatchingStreams returns the assignment ids on this node whose metadata match
 // the log selector (used by the agent log query server, T-54).
 func (e *Executor) MatchingStreams(sel *zatterav1.LogSelector) []logstore.StreamID {

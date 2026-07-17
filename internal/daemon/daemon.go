@@ -48,6 +48,7 @@ import (
 	"github.com/zattera-dev/zattera/internal/daemon/scheduler"
 	"github.com/zattera-dev/zattera/internal/daemon/secrets"
 	"github.com/zattera-dev/zattera/internal/daemon/tlsmgr"
+	"github.com/zattera-dev/zattera/internal/daemon/tsdb"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 	"github.com/zattera-dev/zattera/internal/pkgutil/platform"
@@ -518,6 +519,8 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 			}
 		}
 
+		metricsStore := openMetricsStore(cfg, clk, log)
+		defer func() { _ = metricsStore.Close() }()
 		na := agent.New(agent.Config{
 			NodeID:       nodeID,
 			Version:      version.Version,
@@ -528,6 +531,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 			HostIP:       agentHostIP(cfg),
 			RegistryAuth: selfRegAuth,
 			Dial:         localAgentDialer(authority, nodeID, cfg.API.Listen, log),
+			Store:        metricsStore,
 		})
 		go func() {
 			if err := na.Run(ctx); err != nil && ctx.Err() == nil {
@@ -925,6 +929,8 @@ func runWorker(ctx context.Context, cfg config.Config, jr *joinResult, log *slog
 		regAuth = &crt.RegistryAuth{Username: jr.RegistryUser, Password: jr.RegistryPass, ServerAddress: jr.RegistryAddr}
 	}
 
+	metricsStore := openMetricsStore(cfg, clock.Real{}, log)
+	defer func() { _ = metricsStore.Close() }()
 	na := agent.New(agent.Config{
 		NodeID:       jr.NodeID,
 		Version:      version.Version,
@@ -935,6 +941,7 @@ func runWorker(ctx context.Context, cfg config.Config, jr *joinResult, log *slog
 		HostIP:       hostIP,
 		RegistryAuth: regAuth,
 		Dial:         dial,
+		Store:        metricsStore,
 	})
 
 	// Internal service mesh: subscribe to route snapshots from control, then run
@@ -994,6 +1001,17 @@ func workerAgentDialer(jr *joinResult) (func(context.Context) (*agent.Conn, erro
 		}
 		return &agent.Conn{ClientConnInterface: conn, Close: conn.Close}, nil
 	}, nil
+}
+
+// openMetricsStore opens this node's ring TSDB (T-59) under the data dir. The
+// metrics sampler records node/instance/proxy series into it; T-60 serves it via
+// AgentLocalService.
+func openMetricsStore(cfg config.Config, clk clock.Clock, log *slog.Logger) *tsdb.RingStore {
+	return tsdb.Open(tsdb.Config{
+		Path:   filepath.Join(cfg.DataDir, "metrics", "tsdb.bin"),
+		Clock:  clk,
+		Logger: log,
+	})
 }
 
 // agentHostIP is where the executor publishes container ports and where joined

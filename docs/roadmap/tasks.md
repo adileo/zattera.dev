@@ -2056,8 +2056,32 @@ on absent dst, backpressure drop; meshsock falls back to relay when UDP
 paths are blocked in the NAT simulator.
 **Acceptance:** `go test ./internal/daemon/mesh/relay/`
 
-### T-59 — Metrics sampler + ring TSDB
+### T-59 — Metrics sampler + ring TSDB  ✅ **DONE** (proxy env-series feed → T-60)
 Phase 6 · Depends: T-13 · Size: L
+**Landed:** `internal/daemon/tsdb/ring.go` implements `tsdb.Store` (`RingStore`):
+per-`SeriesKey` raw (15s×5760) + downsampled (5m×8640) float32 rings, each
+position tagged with its absolute slot number so wrap-around never misreads a
+stale slot; downsample-on-write folds each new raw slot into the 5m slot's
+running average (per-slot `cnt`); out-of-order samples older than the current
+slot are dropped, same-slot re-samples overwrite; `Query` picks raw vs down by
+step; 48h GC of idle series; atomic flat-file persistence (`versioned header +
+rings`, temp-file+rename) flushed every 60s by a background goroutine and on
+`Close`, missing/corrupt file → start empty with a warning. The agent sampler
+(`internal/daemon/agent/metrics.go`) runs a 15s loop recording node
+cpu/mem/disk/net (gopsutil) and per-instance cpu/mem/net (`Executor.InstanceStats`
+→ `runtime.Stats`); it is wired into both node-agent bring-up paths in
+`daemon.go` (store at `<data-dir>/metrics/tsdb.bin`). Tests cover round-trip,
+sub-window, out-of-order/overwrite, wrap-around, downsample average, resolution
+selection, Keys filter, persist/load, corrupt-load, GC, and the sampler across
+all three scopes.
+**Deferred to T-60:** the proxy env-series feed (`rps`, `latency_p50_ms`,
+`latency_p99_ms`, `error_rate`, `inflight`). The sampler already accepts a
+`ProxyStats ProxyMetricsFunc` provider and records these series when it is set;
+what remains is threading the ingress L7's `proxy.Stats` handle (created inside
+`serveIngress`) out to the agent's `Config.ProxyStats`. T-60 owns this — it is
+the consumer that fans out to agent TSDBs and already touches the ingress/metrics
+surface.
+**Original spec below.**
 **Files:** `internal/daemon/tsdb/ring.go`, `ring_test.go`,
 `internal/daemon/agent/metrics.go`
 **Steps:**
@@ -2083,6 +2107,12 @@ Phase 6 · Depends: T-59, T-41 · Size: M
 **Files:** `internal/daemon/api/metricssvc.go` (extend),
 `internal/cli/stats.go` (extend)
 **Steps:**
+0. Pick up the T-59 deferral: feed the proxy env-series into the metrics
+   sampler. Surface the ingress L7's `proxy.Stats` (built in `serveIngress`,
+   `internal/daemon/ingresswiring.go`) up to the node agent and pass it as
+   `agent.Config.ProxyStats` (the sampler already records `rps`,
+   `latency_p50_ms`, `latency_p99_ms`, `error_rate`, `inflight` when set). Only
+   the ingress-running node has an L7; that is where the request counters live.
 1. `Stats` with a time range: fan out to the relevant nodes'
    `AgentLocalService.Stats` (agents serve their local TSDB), merge series
    (concat by scope — node series live on that node; env series merge by

@@ -17,6 +17,7 @@ import (
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/daemon/runtime"
+	"github.com/zattera-dev/zattera/internal/daemon/tsdb"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 )
 
@@ -78,6 +79,15 @@ type Config struct {
 	// clock).
 	HeartbeatInterval time.Duration
 
+	// Store, when set, enables the metrics sampler (T-59): a 15s loop recording
+	// node, per-instance and proxy series into the local ring TSDB.
+	Store tsdb.Store
+	// ProxyStats supplies per-env proxy samples for the metrics sampler (nil on
+	// nodes without a proxy).
+	ProxyStats ProxyMetricsFunc
+	// MetricsInterval overrides the 15s sampler cadence (tests use a fake clock).
+	MetricsInterval time.Duration
+
 	// OnAssignments is invoked with every AssignmentSet the control plane
 	// pushes. The executor (T-15) reconciles Docker to it; the skeleton records
 	// the version and forwards the set here.
@@ -93,6 +103,9 @@ type Agent struct {
 	// executor reconciles pushed assignments against the local runtime (nil
 	// when Config.Runtime is nil).
 	executor *Executor
+	// sampler records node/instance/proxy metrics into the TSDB (nil when
+	// Config.Store is nil).
+	sampler *metricsSampler
 	// statusCh carries executor status batches to the current sync stream; it
 	// persists across reconnects and buffers while disconnected.
 	statusCh chan *clusterv1.StatusBatch
@@ -132,6 +145,24 @@ func New(cfg Config) *Agent {
 			RegistryAuth: cfg.RegistryAuth,
 		})
 	}
+	if cfg.Store != nil {
+		interval := cfg.MetricsInterval
+		if interval <= 0 {
+			interval = metricsInterval
+		}
+		a.sampler = &metricsSampler{
+			store:    cfg.Store,
+			clk:      cfg.Clock,
+			log:      cfg.Logger,
+			nodeID:   cfg.NodeID,
+			interval: interval,
+			node:     gopsutilNodeMetrics(cfg.DiskPath, cfg.Logger),
+			proxy:    cfg.ProxyStats,
+		}
+		if a.executor != nil {
+			a.sampler.instances = a.executor.InstanceStats
+		}
+	}
 	return a
 }
 
@@ -159,6 +190,9 @@ func (a *Agent) reportStatus(observed map[string]*zatterav1.AssignmentObserved) 
 func (a *Agent) Run(ctx context.Context) error {
 	if a.executor != nil {
 		go a.executor.Run(ctx)
+	}
+	if a.sampler != nil {
+		go a.sampler.Run(ctx)
 	}
 	backoff := minBackoff
 	for {
