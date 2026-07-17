@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hashicorp/raft"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
@@ -155,5 +156,32 @@ func TestApplyOnNonLeaderFails(t *testing.T) {
 	err := s.Apply(context.Background(), cmdPutProject("r", "p", "n"))
 	if !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("expected ErrNotLeader, got %v", err)
+	}
+}
+
+// TestShutdownReleasesBoltLock reopens the same on-disk data dir after Shutdown.
+// raft.Shutdown does not close the bbolt log/stable store it was handed, so
+// unless Shutdown closes it explicitly the file lock leaks and the reopen's
+// bbolt.Open blocks forever — the deadlock that hung the disaster-recovery
+// restore-then-verify path. A leaked lock makes this test time out.
+func TestShutdownReleasesBoltLock(t *testing.T) {
+	dir := t.TempDir()
+	_, tr := raft.NewInmemTransport("reopen")
+	open := func() *Store {
+		s, err := New(Config{NodeID: "reopen", DataDir: dir, Transport: tr}, state.New())
+		if err != nil {
+			t.Fatalf("raftstore.New: %v", err)
+		}
+		return s
+	}
+
+	first := open()
+	if err := first.Shutdown(); err != nil {
+		t.Fatalf("first shutdown: %v", err)
+	}
+	// Would deadlock on the leaked flock before the fix.
+	second := open()
+	if err := second.Shutdown(); err != nil {
+		t.Fatalf("second shutdown: %v", err)
 	}
 }

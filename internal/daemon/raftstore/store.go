@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -60,6 +61,10 @@ type Store struct {
 	log   *slog.Logger
 
 	trans raft.Transport
+	// boltStore, when non-nil, is the on-disk log/stable store whose bbolt file
+	// lock must be released on Shutdown — raft.Shutdown does not close stores it
+	// was handed. Nil for the in-memory store.
+	boltStore io.Closer
 }
 
 // New creates (and possibly bootstraps) the raft node.
@@ -80,6 +85,7 @@ func New(cfg Config, st *state.Store) (*Store, error) {
 		logStore  raft.LogStore
 		stable    raft.StableStore
 		snaps     raft.SnapshotStore
+		boltStore io.Closer
 		transport = cfg.Transport
 		err       error
 	)
@@ -95,7 +101,7 @@ func New(cfg Config, st *state.Store) (*Store, error) {
 		if err != nil {
 			return nil, fmt.Errorf("raftstore: bolt store: %w", err)
 		}
-		logStore, stable = bolt, bolt
+		logStore, stable, boltStore = bolt, bolt, bolt
 		snaps, err = raft.NewFileSnapshotStore(cfg.DataDir, 2, os.Stderr)
 		if err != nil {
 			return nil, fmt.Errorf("raftstore: snapshot store: %w", err)
@@ -138,7 +144,7 @@ func New(cfg Config, st *state.Store) (*Store, error) {
 		}
 	}
 
-	return &Store{raft: r, fsm: fsm, state: st, log: logger, trans: transport}, nil
+	return &Store{raft: r, fsm: fsm, state: st, log: logger, trans: transport, boltStore: boltStore}, nil
 }
 
 // State returns the shared state store (read-side).
@@ -279,5 +285,15 @@ func (s *Store) RemoveServer(nodeID string) error {
 
 // Shutdown stops the raft node gracefully.
 func (s *Store) Shutdown() error {
-	return s.raft.Shutdown().Error()
+	err := s.raft.Shutdown().Error()
+	// raft.Shutdown does not close the log/stable store it was handed; close the
+	// bbolt store explicitly so its file lock is released (a reopen of the same
+	// data dir in-process — e.g. disaster-recovery restore-then-verify — would
+	// otherwise deadlock on the leaked flock).
+	if s.boltStore != nil {
+		if cerr := s.boltStore.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	return err
 }
