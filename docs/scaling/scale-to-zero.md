@@ -6,7 +6,7 @@ description: Idle apps scale to zero replicas and wake on request — work in pr
 # Scale to zero & serverless
 
 ::: callout warning Partly implemented
-Idle **scale-down** works (an idle app cools to 0 replicas). **Wake-on-request** — the ingress holding a request and starting an instance — lands with T-70; until then a cooled app must be brought back up with a deploy or `zt apply`. Serverless concurrency mode (`max_concurrency`) is T-71.
+Idle **scale-down** and **wake-on-request** both work: an idle app cools to 0 replicas and the next request transparently starts it back up. Serverless concurrency mode (`max_concurrency`) is still on the roadmap (T-71).
 :::
 
 Turn it on per environment in `zattera.toml`:
@@ -28,4 +28,9 @@ The leader tracks each environment's request activity from the ingress proxies (
 
 ## Waking up
 
-Automatic wake-on-request (park the incoming request, start an instance, flush once healthy) is not wired yet — it arrives with the activator (T-70). Today, redeploy or re-apply to wake a cooled app.
+When a request arrives for a cooled env, the ingress **holds** it instead of failing: it asks the control plane to wake the env (which restores the replica count to `replicas.min`), waits for the new instance to become healthy, then proxies the held request through — the caller just sees a slower first response (the cold start). Concurrent requests for the same env share one activation and are flushed together once an endpoint appears.
+
+Guardrails:
+- **Bounded queue** — at most 100 requests wait per env during a cold start; beyond that the proxy sheds with `503 Retry-After: 2`.
+- **Deadline** — a held request that sees no endpoint within 60s gets `504`.
+- **Body cap** — requests with a body larger than 10 MiB are refused during cold start so a slow upload can't tie up a wake slot.

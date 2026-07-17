@@ -27,8 +27,9 @@ type L7 struct {
 	clk    clock.Clock
 	rnd    func(n int) int
 
-	// Activate is the scale-to-zero hook (T-71). Nil for now.
-	Activate func(envID string)
+	// activator parks and wakes requests for scaled-to-zero envs (T-70). Nil
+	// disables wake-on-request (a no-endpoint route then just 502s).
+	activator *Activator
 
 	// DisableHTTPSRedirect serves plaintext requests directly instead of
 	// 308-redirecting them to HTTPS. Single-node/dev sets this: HTTPS runs on a
@@ -57,6 +58,12 @@ func NewL7(source RouteSource, node string, clk clock.Clock) *L7 {
 
 // Stats exposes the metrics accumulator (heartbeat sampling).
 func (p *L7) Stats() *Stats { return p.stats }
+
+// SetActivator enables wake-on-request for scaled-to-zero envs (T-70).
+func (p *L7) SetActivator(a *Activator) { p.activator = a }
+
+// Activator returns the configured activator (nil if wake-on-request is off).
+func (p *L7) Activator() *Activator { return p.activator }
 
 func (p *L7) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	snap := p.source.Current()
@@ -89,11 +96,23 @@ func (p *L7) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ep, setCookie := p.selectEndpoint(route, r)
 	if ep == nil {
-		if route.GetScaleToZero() && p.Activate != nil {
-			p.Activate(route.GetEnvironmentId())
+		// Scale-to-zero: park the request, wake the env, and retry once an
+		// endpoint appears (T-70). Anything else is a genuine bad gateway.
+		if route.GetScaleToZero() && p.activator != nil {
+			if !p.activator.Hold(w, r, route.GetEnvironmentId(), route.GetHostname()) {
+				return // activator wrote the response (shed / timeout / oversized)
+			}
+			snap = p.source.Current()
+			if route = matchHTTP(snap, r); route == nil {
+				writeProxyError(w, http.StatusNotFound, "no route for host")
+				return
+			}
+			ep, setCookie = p.selectEndpoint(route, r)
 		}
-		writeProxyError(w, http.StatusBadGateway, "no healthy endpoint")
-		return
+		if ep == nil {
+			writeProxyError(w, http.StatusBadGateway, "no healthy endpoint")
+			return
+		}
 	}
 	if setCookie != "" {
 		http.SetCookie(w, &http.Cookie{

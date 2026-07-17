@@ -2524,7 +2524,7 @@ Phase 7 · Depends: T-61, T-42 · Size: M
 **Tests:** unit — idle detection with fake clock, stateful rejection.
 **Acceptance:** `go test ./internal/daemon/scheduler/ -run TestScaleToZero`
 
-### T-70 — Activator: hold, wake, flush
+### T-70 — Activator: hold, wake, flush  ✅ **DONE**
 Phase 7 · Depends: T-69 · Size: L
 **Files:** `internal/daemon/proxy/activator.go`, control
 `internal/daemon/api/activator.go`, tests
@@ -2547,6 +2547,11 @@ overflow; deadline 504. E2E extension: scale-to-zero fixture env wakes on
 curl (extend T-54's smoke as a separate e2e test file).
 **Acceptance:** `go test ./internal/daemon/proxy/ -run TestActivator`;
 `go test -tags e2e -run TestWake ./test/e2e/`
+**Follow-ups (noted):** (a) the control-node ingress calls Activate in-process,
+so a *follower* control node returns ErrNotLeader — multi-control wake needs the
+request to reach the leader's ingress; fold into the T-55b multi-control HA work.
+(b) cold-start latency is accumulated on the proxy Activator (`ColdStart()`) but
+not yet surfaced in `zt stats` — small follow-up.
 
 ### T-71 — Serverless concurrency autoscaling
 Phase 7 · Depends: T-70, T-61 · Size: M

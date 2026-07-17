@@ -339,19 +339,30 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 	// metrics sampler (T-59/T-60) can record env-scoped series from them.
 	var proxyStats atomic.Pointer[proxy.Stats]
 	statsSink := func(s *proxy.Stats) { proxyStats.Store(s) }
+
+	// Scale-to-zero activator (T-70): the control-node ingress parks a request
+	// for a cold env and calls this to wake it. In-process apply — correct on the
+	// leader (always in single-control). NOTE: on a follower control node this
+	// returns ErrNotLeader, so wake-on-request currently needs the request to
+	// reach the leader's ingress (tracked with the T-55b multi-control HA work).
+	activatorSrv := api.NewActivatorServer(st, rs, clk, log)
+	activateFn := func(ctx context.Context, envID string) error {
+		_, err := activatorSrv.Activate(ctx, &clusterv1.ActivateRequest{EnvironmentId: envID, NodeId: nodeID})
+		return err
+	}
 	switch {
 	case cfg.Ingress.Disabled:
 		// explicitly off
 	case cfg.Dev:
 		if err := startDevIngress(ctx, configForIngress{
 			HTTPListen: cfg.Ingress.HTTPListen, HTTPSListen: cfg.Ingress.HTTPSListen,
-		}, routeBuilder, authority, nodeID, clk, statsSink, log); err != nil {
+		}, routeBuilder, authority, nodeID, clk, statsSink, activateFn, log); err != nil {
 			log.Warn("ingress failed to start", "err", err)
 		}
 	case prodTM == nil:
 		log.Warn("production ingress needs a TLS manager; ingress disabled")
 	default:
-		if err := startProdIngress(ctx, cfg, routeSource, prodTM, nodeID, clk, statsSink, log); err != nil {
+		if err := startProdIngress(ctx, cfg, routeSource, prodTM, nodeID, clk, statsSink, activateFn, log); err != nil {
 			log.Warn("ingress failed to start", "err", err)
 		}
 	}
@@ -409,6 +420,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 		JoinService:       joinSrv,
 		MeshService:       api.NewMeshServer(st, rs, clk, log),
 		RouteService:      api.NewRouteServer(routeBuilder),
+		ActivatorService:  activatorSrv,
 		DomainService:     api.NewDomainServer(st, rs, clk, cfg.Domain),
 		GitHubWebhook:     api.NewGitHubWebhook(st, rs, sealer, clk, log),
 		SourceBlobHandler: api.SourceBlobHandler(uploadsDir),

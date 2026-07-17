@@ -68,6 +68,9 @@ type Options struct {
 	MeshService clusterv1.MeshServiceServer
 	// RouteService streams route snapshots to node proxies (mTLS node identity).
 	RouteService clusterv1.RouteServiceServer
+	// ActivatorService wakes scaled-to-zero envs on a proxy's request (mTLS node
+	// identity).
+	ActivatorService clusterv1.ActivatorServiceServer
 
 	// GitHubWebhook, if set, is mounted as a raw HTTP handler at
 	// /v1/github/webhook (signature-authenticated, not part of the gRPC policy).
@@ -304,6 +307,9 @@ func registerGRPC(s *grpc.Server, opts Options) {
 	}
 	if opts.RouteService != nil {
 		clusterv1.RegisterRouteServiceServer(s, opts.RouteService)
+	}
+	if opts.ActivatorService != nil {
+		clusterv1.RegisterActivatorServiceServer(s, opts.ActivatorService)
 	}
 }
 
