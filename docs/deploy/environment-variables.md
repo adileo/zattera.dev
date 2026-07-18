@@ -23,39 +23,54 @@ zt env unset STRIPE_KEY --app api --env production
 
 ### Loading a local `.env` file
 
-There is no `--from-file` flag yet ([T-103](../roadmap/tasks)), so uploading a `.env` means feeding its lines to `zt env set` as arguments. Split on **newlines**, never on whitespace:
-
 ```bash
-# bash / zsh — one argument per line, values kept verbatim
-IFS=$'\n' read -r -d '' -a VARS < <(grep -vE '^\s*(#|$)' .env && printf '\0')
-zt env set "${VARS[@]}" --app api --env production
+zt env set --from-file .env --app api --env production
+cat .env | zt env set --from-file - --app api --env production   # or stdin
 ```
 
-The obvious one-liner is the wrong one:
+Check first — `--dry-run` prints the keys it would set and never the values, so it's safe to paste into a ticket or a CI log:
 
 ```bash
-zt env set $(cat .env | xargs) --app api --env production   # ✗ don't
+zt env set --from-file .env --dry-run --app api --env production
+# would set 3 variable(s):
+# DATABASE_URL
+# STRIPE_KEY
+# TLS_KEY
 ```
 
-`xargs` splits on spaces, so `GREETING="hello world"` becomes two arguments and the command fails with `invalid KEY=VALUE: "world"` — or worse, succeeds having mangled something.
+The file is parsed properly rather than handed to the shell, which cannot do it: `zt env set $(cat .env | xargs)` word-splits on spaces, so `GREETING="hello world"` fails with `invalid KEY=VALUE: "world"`, and splitting on newlines instead stores quotes and `export ` prefixes literally.
 
-::: callout warning The shell is not a `.env` parser
-Even the newline-safe version above passes lines through **literally**, which is not what dotenv tools do:
+What the parser accepts:
 
-| In your `.env` | What Zattera stores | What you probably meant |
-| -------------- | ------------------- | ----------------------- |
-| `QUOTED="hello world"` | `"hello world"` — quotes included | `hello world` |
-| `export FOO=bar` | key `export FOO` — with a space | key `FOO` |
-| `FOO=bar # trailing note` | `bar # trailing note` | depends on your parser |
+| In your `.env` | Stored value |
+| -------------- | ------------ |
+| `# comment`, blank lines | skipped |
+| `export FOO=bar` | key `FOO`, value `bar` |
+| `QUOTED="hello world"` | `hello world` — surrounding quotes removed |
+| `SINGLE='literal $TEXT'` | `literal $TEXT` — single quotes are literal |
+| `FOO=bar # note` | `bar` — trailing comment dropped (unquoted values only) |
+| `URL=https://x/y#frag` | `https://x/y#frag` — a `#` without a leading space is kept |
+| `EQUALS=a=b=c` | `a=b=c` — only the first `=` splits |
+| `KEY="line1\nline2"` | a real two-line value: `\n`, `\r`, `\t`, `\\`, `\"` are unescaped inside double quotes |
 
-Multi-line values (PEM keys, certificates) can't come from this at all — the API stores them fine, but a shell line-splitter can't reassemble them, and `zt env pull` prints them across multiple lines, so its output no longer round-trips.
+A line that isn't blank, a comment, or `KEY=VALUE` is an error naming the file and line (`​.env:7: not a KEY=VALUE line: "GARBAGE"`) rather than a silently skipped variable. `${VAR}` is **not** interpolated — it's stored verbatim, because silently expanding one secret into another is a good way to leak the wrong value.
 
-**So:** use the loop for simple, unquoted files, and set anything quoted, prefixed, or multi-line explicitly:
+You can combine both, and an explicit argument wins over the file — handy for overriding one value from a shared template:
 
 ```bash
-zt env set "TLS_KEY=$(cat server.key)" --app api --env production
+zt env set --from-file .env.template STRIPE_KEY=sk_live_… --app api --env production
 ```
-:::
+
+### Copying variables between environments
+
+`env pull --reveal` output is quoted so it feeds straight back in, which makes cloning an environment two commands:
+
+```bash
+zt env pull --reveal --app api --env staging > /tmp/staging.env
+zt env set --from-file /tmp/staging.env --app api --env production
+```
+
+Values survive exactly — spaces, quotes, `#`, tabs and multi-line PEM keys included. (Delete the file afterwards: it's plaintext secrets on your disk.)
 
 ### Changes apply on the next deploy
 

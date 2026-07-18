@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -46,18 +47,49 @@ func resolveEnv(ctx context.Context, client *apiclient.Client, project, app, env
 }
 
 func newEnvSetCmd() *cobra.Command {
+	var fromFile string
+	var dryRun bool
 	cmd := &cobra.Command{
-		Use:   "set KEY=VALUE [KEY=VALUE...]",
+		Use:   "set [KEY=VALUE...]",
 		Short: "Set environment variables",
-		Args:  cobra.MinimumNArgs(1),
+		Long: "Set environment variables from arguments, a .env file, or both.\n\n" +
+			"--from-file parses a .env properly (comments, `export ` prefixes, quoted\n" +
+			"values, \\n escapes) instead of leaving it to the shell, which cannot do it\n" +
+			"without silently mangling quoted or multi-line values. Use \"-\" to read\n" +
+			"stdin. Arguments win over file entries for the same key.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && fromFile == "" {
+				return fmt.Errorf("nothing to set: pass KEY=VALUE arguments or --from-file")
+			}
 			set := map[string]string{}
+			if fromFile != "" {
+				fileVars, err := readDotenv(cmd, fromFile)
+				if err != nil {
+					return err
+				}
+				set = fileVars
+			}
+			// Explicit arguments are applied last: an argument beats the file.
 			for _, a := range args {
 				k, v, ok := strings.Cut(a, "=")
 				if !ok || k == "" {
 					return fmt.Errorf("invalid KEY=VALUE: %q", a)
 				}
 				set[k] = v
+			}
+			if dryRun {
+				// Names only, never values — a dry run must be safe to paste
+				// into a ticket or a CI log.
+				p := printerFor(cmd)
+				keys := sortedKeys(set)
+				if p.JSON {
+					return p.EmitJSON(keys)
+				}
+				p.Infof("would set %d variable(s):", len(keys))
+				for _, k := range keys {
+					fmt.Fprintln(cmd.OutOrStdout(), k)
+				}
+				return nil
 			}
 			client, cctx, err := clientFromContext()
 			if err != nil {
@@ -84,7 +116,32 @@ func newEnvSetCmd() *cobra.Command {
 		},
 	}
 	envTargetFlags(cmd)
+	cmd.Flags().StringVar(&fromFile, "from-file", "", `read KEY=VALUE lines from a .env file ("-" for stdin)`)
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the keys that would be set (never the values) and exit")
 	return cmd
+}
+
+// readDotenv loads a .env from a path or stdin.
+func readDotenv(cmd *cobra.Command, path string) (map[string]string, error) {
+	if path == "-" {
+		return parseDotenv(cmd.InOrStdin(), "-")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return parseDotenv(f, path)
+}
+
+// sortedKeys returns a map's keys in sorted order.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func newEnvPullCmd() *cobra.Command {
@@ -124,7 +181,10 @@ func newEnvPullCmd() *cobra.Command {
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, resp.GetVars()[k])
+				// Quote so `env pull --reveal > .env` feeds straight back into
+				// `env set --from-file` without losing spaces, quotes or
+				// newlines (T-103).
+				fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, quoteEnvValue(resp.GetVars()[k]))
 			}
 			return nil
 		},

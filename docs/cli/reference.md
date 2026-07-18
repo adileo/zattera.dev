@@ -41,8 +41,8 @@ Defaults to `--env production`. See [Environment variables](../deploy/environmen
 
 | Command | Description |
 | ------- | ----------- |
-| `zt env set KEY=VALUE [KEY=VALUE…] [--app NAME] [--env NAME]` | Set variables (sealed at rest) |
-| `zt env pull [--reveal]` | Print `KEY=value` lines; values are redacted without `--reveal` (developer+) |
+| `zt env set [KEY=VALUE…] [--from-file PATH\|-] [--dry-run] [--app NAME] [--env NAME]` | Set variables (sealed at rest). `--from-file` parses a `.env` (`-` = stdin); arguments win over file entries; `--dry-run` prints key names only |
+| `zt env pull [--reveal]` | Print `KEY=value` lines; values are redacted without `--reveal` (developer+). Output is quoted so it round-trips through `env set --from-file` |
 | `zt env unset KEY [KEY…]` | Remove variables |
 
 ## Deploy & releases

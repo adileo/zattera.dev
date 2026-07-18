@@ -3950,6 +3950,36 @@ quotes and newlines exactly.
 `docs/deploy/environment-variables.md` (and its "the shell is not a .env
 parser" warning) with the real command, and add the flag to the CLI reference.
 
+**DONE** — `zt env set --from-file <path|-> [--dry-run]`, parser in
+`internal/cli/dotenv.go` (deliberately separate from the command so it is
+testable on its own). Positional args are applied after the file, so an
+explicit argument overrides a file entry. `--dry-run` prints key names and
+never values. `env pull --reveal` now quotes values through `quoteEnvValue`,
+making `pull > .env` → `set --from-file .env` lossless.
+**Decisions taken (step 2/6 asked):** `${VAR}` is **not** interpolated — the
+text is stored verbatim, because silently expanding one secret into another
+is the kind of bug you find in production. `--replace` was **not** added: it
+is destructive, nothing needed it yet, and "delete everything absent from
+this file" deserves its own explicit design rather than a flag bolted on here.
+**Parser contract:** blank/`#` lines skipped, optional `export ` stripped,
+surrounding single or double quotes removed, `\n \r \t \\ \"` unescaped inside
+double quotes only (single quotes literal, POSIX-style), trailing ` #` comment
+dropped on unquoted values only (so `https://x#frag` survives), first `=`
+splits, CRLF tolerated, 4 MB line cap for escaped PEM bodies. A line that is
+neither blank, comment, nor `KEY=VALUE` errors with file and line number
+instead of being skipped.
+**Tests:** `internal/cli/dotenv_test.go` — the exact cases the shell mangled
+(quotes, `export `, trailing comments, `=` in value, `#` in URL), escapes and
+multi-line values, CRLF, four error cases each asserting the file:line is
+named, no interpolation, later-duplicate-wins, plus a round-trip property test
+over spaces/quotes/newlines/tabs/backslashes/`${}`.
+**Verified live** on a dev cluster with the same `.env` that broke the shell
+earlier: `--dry-run` listed 6 names and no values, the real run stored
+`hello world` unquoted, `EXPORTED` (not `export EXPORTED`), `value` without
+its trailing comment, and a genuinely multi-line `TLS_KEY`; stdin form worked;
+an argument overrode the file; and `pull --reveal` from one app piped into
+another app produced a byte-identical `diff`.
+
 ---
 
 # Backlog (M4/M5 — do not implement now)
