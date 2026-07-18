@@ -45,6 +45,9 @@ func newProdTLSManager(rs *raftstore.Store, source proxy.RouteSource, extraHosts
 		Email:   acme.Email,
 		Staging: acme.Staging,
 		Logger:  log,
+		// Renewal failures feed the built-in cert-renew-failed rule (T-109).
+		// Leader-only until T-110 gives workers an upstream event path.
+		EmitEvent: raftEventEmitter(rs, clk, log, "system:tls"),
 	})
 }
 

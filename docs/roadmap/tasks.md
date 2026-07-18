@@ -4216,6 +4216,78 @@ error rather than a silent steal. Deleting a domain drops its certificate.
 hostname owned by another env fails with a useful message.
 **Acceptance:** `go test ./internal/cli/ ./internal/daemon/api/ -run Domain`
 
+### T-109 — Three built-in alert rules can never fire
+
+Phase 9 · Depends: T-74 · Size: S
+**Problem:** `defaultAlertRules` (`internal/daemon/bootstrap.go`) creates
+built-in event rules for `deploy.failed`, `node.down`, `cert.renew_failed` and
+`backup.failed`, and `docs/operations/metrics-and-alerts.md` documents all four
+as working. Only `deploy.failed` is ever emitted — the other three kinds appear
+nowhere in the codebase outside the rule definitions. An operator attaches a
+Slack channel to `node-down`, sees the rule listed by `zt alerts rules ls`, and
+gets silence when a node dies. Monitoring that fails silently is worse than
+monitoring that is absent, because it stops you looking. Noted as a follow-up
+under T-74 but never tracked as work.
+**Files:** `internal/daemon/api/eventemit.go` (new),
+`internal/daemon/api/liveness.go`, `internal/daemon/api/backup.go`,
+`internal/daemon/tlsmgr/tlsmgr.go`, `internal/daemon/daemon.go`,
+`docs/operations/metrics-and-alerts.md`, `docmd.config.json`
+**Steps:**
+
+1. Shared `emitEvent` helper in package `api` — best-effort `AppendEvents`
+   through raft, never failing the caller's operation.
+2. `node.down` from `LivenessMonitor.tick` on the durable ALIVE→DOWN
+   transition (the `statusChanged` branch), not on every tick while a node
+   stays down. The monitor is already leader-only, so this is exact.
+3. `backup.failed` from the `TriggerBackup` error path, alongside the existing
+   failed `BackupRecord`.
+4. `cert.renew_failed` from certmagic's `OnEvent` hook on `cert_failed` with
+   `renewal == true`. Initial-issuance failures (`renewal == false`) are a
+   different condition with no documented event kind — left alone deliberately.
+5. Drop `· WIP` from the metrics & alerts nav entry in `docmd.config.json`
+   once the built-ins actually work, and document the two real limitations
+   (below) on the page.
+
+**Gotchas:** `raftstore.Store.Apply` returns `ErrNotLeader` on followers and
+does **not** forward, and there is no agent→leader event path. Liveness and
+backup are leader-only paths so they are unaffected, but `tlsmgr` runs on every
+node: a renewal failure on a non-leader cannot reach the event log and only
+reaches that node's logs. Documented, and the upstream path is filed as T-110.
+Also note the alert engine is gated on `sealer != nil` (`daemon.go`), so a
+sealed node runs no alerting at all — undocumented until now.
+**Tests:** ALIVE→DOWN emits exactly one `node.down` and a sustained DOWN emits
+no more; DOWN→ALIVE emits none; a failed backup emits `backup.failed`; a
+certmagic `cert_failed` payload with `renewal=true` maps to `cert.renew_failed`
+and with `renewal=false` maps to nothing.
+**Acceptance:** `go test ./internal/daemon/api/ ./internal/daemon/tlsmgr/`
+
+### T-110 — No agent→leader event path
+
+Phase 9 · Depends: T-109, T-14 · Size: M
+**Problem:** only the raft leader can append to the event log
+(`raftstore.Store.Apply` rejects followers without forwarding), and the agent
+stream carries no events. Anything worth alerting on that happens on a worker
+node — a failed certificate renewal being the case found in T-109, but also
+runtime and volume errors — cannot reach the cluster event log, so no alert
+rule can ever match it.
+**Files:** `api/proto/zattera/cluster/v1/agent.proto`,
+`internal/daemon/agent/`, `internal/daemon/api/agentsync.go`
+**Steps:**
+
+1. Add an events field to the agent heartbeat (or a small dedicated RPC) and
+   have the leader fold them into `AppendEvents`.
+2. Bound and rate-limit it: a node in a crash loop must not be able to flood
+   replicated state, which is ring-capped and shared.
+3. Point `tlsmgr`'s emitter at it so T-109's `cert.renew_failed` fires
+   cluster-wide instead of leader-only.
+
+**Gotchas:** events are replicated state — untrusted-ish input from every node
+needs a cap per node per interval, and dedupe, or one sick node evicts everyone
+else's history from the ring.
+**Tests:** a worker-emitted event reaches the leader's event log; a flooding
+node is throttled without dropping other nodes' events.
+**Acceptance:** `go test ./internal/daemon/api/ ./internal/daemon/agent/`
+
 ---
 
 # Backlog (M4/M5 — do not implement now)
@@ -4462,5 +4534,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
 P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
-P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31) · T-100(35,95) · T-101(32,55)→T-102(101,64) · T-103(12) · T-104(44) · T-105(44) · T-106(51) · T-107(19) · T-108(11)
+P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31) · T-100(35,95) · T-101(32,55)→T-102(101,64) · T-103(12) · T-104(44) · T-105(44) · T-106(51) · T-107(19) · T-108(11) · T-109(74)→T-110(109,14)
 ```

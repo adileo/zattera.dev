@@ -103,3 +103,39 @@ func TestListBackupsRedactsCreds(t *testing.T) {
 		t.Fatal("ListBackups must redact credentials")
 	}
 }
+
+// TestTriggerBackupEmitsFailureEvent covers the built-in backup-failed alert
+// rule's feed (T-109). The failed BackupRecord alone is passive — nobody reads
+// the backup list until they need a restore — so the failure must also reach
+// the event log where an alert rule can match it.
+func TestTriggerBackupEmitsFailureEvent(t *testing.T) {
+	srv, _, ctx := newBackupHarness(t, true)
+	// A destination that resolves but refuses: backup.Backup fails fast rather
+	// than the request being rejected up front.
+	if _, err := srv.SetBackupConfig(ctx, &zatterav1.SetBackupConfigRequest{
+		Config:           &zatterav1.BackupConfig{S3Endpoint: "127.0.0.1:1", S3Bucket: "backups", S3Region: "eu"},
+		S3AccessKeyPlain: "AKIA", S3SecretKeyPlain: "shh",
+	}); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	if _, err := srv.TriggerBackup(ctx, &zatterav1.TriggerBackupRequest{}); err == nil {
+		t.Fatal("expected the backup to fail against a refused endpoint")
+	}
+
+	var found *zatterav1.Event
+	for _, ev := range srv.store.ListEvents(0) {
+		if ev.GetKind() == "backup.failed" {
+			found = ev
+		}
+	}
+	if found == nil {
+		t.Fatal("no backup.failed event recorded; the built-in alert rule cannot fire")
+	}
+	if found.GetSeverity() != "error" {
+		t.Errorf("severity = %q, want error", found.GetSeverity())
+	}
+	if found.GetMessage() == "" {
+		t.Error("event message is empty; an alert with no cause is not actionable")
+	}
+}

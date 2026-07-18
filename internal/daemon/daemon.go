@@ -529,7 +529,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 	if sealer != nil {
 		alertEngine := notify.NewEngine(notify.Config{
 			Store: st, Metrics: liveMetrics{live: live}, Opener: sealer, Clock: clk, Logger: log,
-			EmitEvent: alertEventEmitter(rs, clk, log),
+			EmitEvent: raftEventEmitter(rs, clk, log, "system:alerts"),
 		})
 		go runAlertEngine(ctx, rs, alertEngine, clk)
 	}

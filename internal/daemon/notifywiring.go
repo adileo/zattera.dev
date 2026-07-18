@@ -42,20 +42,22 @@ func runAlertEngine(ctx context.Context, rs *raftstore.Store, engine *notify.Eng
 	})
 }
 
-// alertEventEmitter records an event through raft (best-effort) so notifier
-// failures surface in the event log.
-func alertEventEmitter(rs *raftstore.Store, clk clock.Clock, log *slog.Logger) func(kind, severity, message string) {
+// raftEventEmitter records an event through raft (best-effort) so subsystem
+// failures surface in the event log and can match an alert rule's event_kind.
+// Only the leader can append (raftstore.Apply does not forward), so on a
+// follower this is a no-op with a debug line — see T-110.
+func raftEventEmitter(rs *raftstore.Store, clk clock.Clock, log *slog.Logger, actor string) func(kind, severity, message string) {
 	return func(kind, severity, message string) {
 		ev := &zatterav1.Event{
 			Meta: &zatterav1.Meta{Id: ids.New(), CreatedAt: timestamppb.New(clk.Now())},
 			Kind: kind, Severity: severity, Message: message,
 		}
 		cmd := &clusterv1.Command{
-			RequestId: ids.New(), Actor: "system:alerts", Time: timestamppb.New(clk.Now()),
+			RequestId: ids.New(), Actor: actor, Time: timestamppb.New(clk.Now()),
 			Mutation: &clusterv1.Command_AppendEvents{AppendEvents: &clusterv1.AppendEvents{Events: []*zatterav1.Event{ev}}},
 		}
 		if err := rs.Apply(context.Background(), cmd); err != nil {
-			log.Debug("alerts: emit event failed", "err", err)
+			log.Debug("emit event failed", "actor", actor, "kind", kind, "err", err)
 		}
 	}
 }

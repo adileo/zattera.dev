@@ -167,6 +167,17 @@ func (m *LivenessMonitor) evaluate(ctx context.Context) {
 		}
 		if statusChanged {
 			m.log.Info("node liveness changed", "node", id, "status", desired.String())
+			// Feed the built-in node-down alert rule (T-109). Emitted on the
+			// durable transition only, so a node that stays DOWN does not
+			// re-notify every tick.
+			if desired == zatterav1.NodeStatus_NODE_STATUS_DOWN {
+				emitEvent(ctx, m.raft, m.log, "system:liveness", &zatterav1.Event{
+					Kind:     "node.down",
+					Severity: "error",
+					NodeId:   id,
+					Message:  "node " + nodeLabel(n) + " is down",
+				})
+			}
 		}
 		if flushHB {
 			m.lastFlush[id] = now

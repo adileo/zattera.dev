@@ -121,6 +121,12 @@ func (s *BackupServer) TriggerBackup(ctx context.Context, _ *zatterav1.TriggerBa
 		rec.Status = "failed"
 		rec.Error = err.Error()
 		_ = s.apply(ctx, recordCmd(rec))
+		// Feed the built-in backup-failed alert rule (T-109): the record alone
+		// is passive, and nobody watches the backup list until it is too late.
+		emitEvent(ctx, s.raft, nil, "system:backup", &zatterav1.Event{
+			Kind: "backup.failed", Severity: "error",
+			Message: "backup failed: " + err.Error(),
+		})
 		return nil, toStatus(err)
 	}
 	rec.Status = "complete"

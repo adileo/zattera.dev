@@ -40,6 +40,10 @@ type Options struct {
 	Email   string
 	Staging bool
 	Logger  *slog.Logger
+	// EmitEvent records a cluster event (T-109). Optional; nil disables event
+	// emission and failures are logged only. Note that only the raft leader can
+	// append events, so on a follower this is best-effort — see T-110.
+	EmitEvent func(kind, severity, message string)
 }
 
 // Manager issues and serves TLS certificates for the ingress :443 listener and
@@ -79,6 +83,7 @@ func New(opts Options) (*Manager, error) {
 		Storage:  opts.Storage,
 		OnDemand: &certmagic.OnDemandConfig{DecisionFunc: m.decide},
 		Logger:   zap.NewNop(),
+		OnEvent:  m.onCertMagicEvent,
 	})
 	caURL := certmagic.LetsEncryptProductionCA
 	if opts.Staging {
@@ -90,6 +95,38 @@ func New(opts Options) (*Manager, error) {
 	cfg.Issuers = []certmagic.Issuer{m.issuer}
 	m.magic = cfg
 	return m, nil
+}
+
+// onCertMagicEvent turns a failed certificate renewal into a cluster event so
+// the built-in cert-renew-failed alert rule can fire (T-109).
+//
+// Only renewals are reported. A failed *initial* issuance is a different
+// condition — a domain that never worked, usually a DNS or firewall mistake
+// visible the moment it is added — and it has no documented event kind, so
+// mapping it onto cert.renew_failed would misreport it.
+//
+// Always returns nil: certmagic treats a non-nil error from OnEvent as a veto
+// of the operation, and observing a failure must never cause one.
+func (m *Manager) onCertMagicEvent(_ context.Context, event string, data map[string]any) error {
+	if event != "cert_failed" {
+		return nil
+	}
+	renewal, _ := data["renewal"].(bool)
+	if !renewal {
+		return nil
+	}
+	name, _ := data["identifier"].(string)
+	msg := "certificate renewal failed for " + name
+	if err, ok := data["error"].(error); ok && err != nil {
+		msg += ": " + err.Error()
+	}
+	// Logged unconditionally: on a follower the event cannot reach the log
+	// (raft rejects non-leader appends), so this line is the only trace.
+	m.opts.Logger.Error("certificate renewal failed", "host", name, "detail", msg)
+	if m.opts.EmitEvent != nil {
+		m.opts.EmitEvent("cert.renew_failed", "error", msg)
+	}
+	return nil
 }
 
 // GetTLSConfig returns the *tls.Config for the :443 listener.

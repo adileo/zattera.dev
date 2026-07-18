@@ -33,6 +33,12 @@ zt alerts rules ls
 - **Dedupe** — a firing rule is silenced for 15 minutes before it re-alerts, per rule + scope.
 - **Built-in rules** — a fresh cluster ships with deletable defaults (`deploy-failed`, `node-down`, `cert-renew-failed`, `backup-failed`, and `disk-full` >90% for 5m). Attach a channel to start receiving them.
 
+### Limits worth knowing
+
+- **Alerting runs only on an unsealed node.** Channel credentials are sealed with the cluster data key, so a sealed node evaluates no rules and sends nothing. Unseal before relying on alerts.
+- **`cert.renew_failed` is reported by the cluster leader.** A renewal that fails on a non-leader node is written to that node's log but does not currently reach the event log, so no rule matches it. Renewal failures are persistent — the next attempt on the leader surfaces it — but the first notification can be delayed.
+- **`cert.renew_failed` covers renewals, not first issuance.** A domain that never obtained a certificate at all is a different condition; check `zt domains ls` for its cert status.
+
 ### Channels
 
 ```bash
