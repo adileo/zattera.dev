@@ -34,7 +34,7 @@ func (s *Store) resetLocked() {
 	s.tokens = map[string]*zatterav1.Token{}
 	s.tokensByHash = map[string]string{}
 	s.domains = map[string]*zatterav1.Domain{}
-	s.domainsByHostname = map[string]string{}
+	s.domainsByHostname = map[string]map[string]bool{}
 	s.kv = map[string]kvEntry{}
 	s.dnsProviders = map[string]*zatterav1.DNSProviderConfig{}
 	s.volumes = map[string]*zatterav1.Volume{}
@@ -194,7 +194,7 @@ func (s *Store) RestoreProto(snap *internalv1.Snapshot) {
 	}
 	for _, d := range snap.GetDomains() {
 		s.domains[d.GetMeta().GetId()] = clone(d)
-		s.domainsByHostname[d.GetHostname()] = d.GetMeta().GetId()
+		s.indexDomain(d)
 	}
 	for _, e := range snap.GetKv() {
 		var exp int64

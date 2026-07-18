@@ -133,7 +133,7 @@ Defaults to `--env staging`. See [Custom domains](../deploy/custom-domains).
 | Command | Description |
 | ------- | ----------- |
 | `zt domains add <hostname> [--path PREFIX] [--port NAME] [--env NAME \| --prod]` | Attach a hostname (optionally a path prefix / specific port) |
-| `zt domains ls` / `domains rm <hostname>` | List (with cert status) / remove |
+| `zt domains ls` / `domains rm <hostname>[<path>]` | List (with cert status) / remove one route. A hostname with several path routes must be removed by the `host/prefix` form `ls` prints |
 
 ## GitHub
 

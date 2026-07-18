@@ -106,7 +106,7 @@ type Store struct {
 	tokensByHash map[string]string // secret hash → token id
 
 	domains           map[string]*zatterav1.Domain
-	domainsByHostname map[string]string // hostname → domain id
+	domainsByHostname map[string]map[string]bool // hostname → set of domain ids (one per path prefix)
 
 	kv map[string]kvEntry
 
@@ -152,7 +152,7 @@ func New() *Store {
 		tokens:            map[string]*zatterav1.Token{},
 		tokensByHash:      map[string]string{},
 		domains:           map[string]*zatterav1.Domain{},
-		domainsByHostname: map[string]string{},
+		domainsByHostname: map[string]map[string]bool{},
 		kv:                map[string]kvEntry{},
 		dnsProviders:      map[string]*zatterav1.DNSProviderConfig{},
 		volumes:           map[string]*zatterav1.Volume{},

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -114,10 +116,15 @@ func newDomainsListCmd() *cobra.Command {
 
 func newDomainsRemoveCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "rm <hostname>",
+		Use:     "rm <hostname>[<path-prefix>]",
 		Aliases: []string{"remove"},
-		Short:   "Remove a domain",
-		Args:    cobra.ExactArgs(1),
+		Short:   "Remove a domain route",
+		Long: "Remove a domain route.\n\n" +
+			"A hostname can carry several routes that differ by path prefix, so pass\n" +
+			"the same form `domains ls` prints — e.g. \"shop.example.com/admin\". A bare\n" +
+			"hostname works when it has exactly one route; with more, the command lists\n" +
+			"them instead of guessing.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, cctx, err := clientFromContext()
 			if err != nil {
@@ -135,15 +142,9 @@ func newDomainsRemoveCmd() *cobra.Command {
 			if err != nil {
 				return apiError(err)
 			}
-			var id string
-			for _, d := range resp.GetDomains() {
-				if d.GetHostname() == args[0] || d.GetMeta().GetId() == args[0] {
-					id = d.GetMeta().GetId()
-					break
-				}
-			}
-			if id == "" {
-				return fmt.Errorf("domain %q not found", args[0])
+			id, err := matchDomainRoute(resp.GetDomains(), args[0])
+			if err != nil {
+				return err
 			}
 			if _, err := client.Domains.RemoveDomain(ctx, &zatterav1.RemoveDomainRequest{ProjectId: proj, DomainId: id}); err != nil {
 				return apiError(err)
@@ -154,6 +155,40 @@ func newDomainsRemoveCmd() *cobra.Command {
 	}
 	addProjectFlag(cmd)
 	return cmd
+}
+
+// matchDomainRoute resolves a `rm` argument to exactly one domain id. The
+// argument may be a domain id, a "host/prefix" route (as `domains ls` prints
+// it), or a bare hostname. A bare hostname that carries several routes is
+// ambiguous: list them rather than deleting whichever happened to come first
+// (T-104).
+func matchDomainRoute(domains []*zatterav1.Domain, arg string) (string, error) {
+	var byHost []*zatterav1.Domain
+	for _, d := range domains {
+		if d.GetMeta().GetId() == arg {
+			return arg, nil
+		}
+		if d.GetHostname()+d.GetPathPrefix() == arg {
+			return d.GetMeta().GetId(), nil // exact route match wins
+		}
+		if d.GetHostname() == arg {
+			byHost = append(byHost, d)
+		}
+	}
+	switch len(byHost) {
+	case 0:
+		return "", fmt.Errorf("domain %q not found", arg)
+	case 1:
+		return byHost[0].GetMeta().GetId(), nil
+	default:
+		var routes []string
+		for _, d := range byHost {
+			routes = append(routes, d.GetHostname()+d.GetPathPrefix())
+		}
+		sort.Strings(routes)
+		return "", fmt.Errorf("%q has %d routes; pass the one to remove: %s",
+			arg, len(byHost), strings.Join(routes, ", "))
+	}
 }
 
 func certStatusLabel(s zatterav1.CertStatus) string {

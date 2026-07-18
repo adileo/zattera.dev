@@ -4031,6 +4031,42 @@ rejected (or allowed, per the decision above) with a test either way.
 **Docs:** replace the "One hostname, one environment" warning in
 `docs/deploy/custom-domains.md` with the working pattern.
 
+**DONE** — uniqueness is now on the **(hostname, path_prefix)** pair.
+`domainsByHostname` became `hostname → set of domain ids`, with
+`DomainsByHostname` (longest prefix first) and `DomainByRoute` alongside the
+existing single-domain lookup, which now documents that it is only for the
+per-hostname ACME policy. `normalizePathPrefix` canonicalizes `/api`, `api`
+and `/api/` onto one route so the same prefix cannot be registered twice.
+**Decision on the flagged policy question:** cross-project sharing is
+**refused** (`PermissionDenied`). The certificate is per-hostname, so letting
+project B claim a path on project A's host would ride on — and could disrupt —
+A's certificate. Same project, any number of apps and environments, is
+supported. This is the conservative direction and can be loosened later
+without breaking anyone.
+**Certificates:** `SetCertStatus` writes to every route of a hostname, since
+one certificate covers them all — otherwise siblings would sit at `pending`
+forever once the first route issued.
+**CLI:** `domains rm` took a bare hostname and deleted the first match, which
+is exactly the "delete whichever came first" hazard. It now accepts the
+`host/prefix` form `ls` prints, a bare hostname (resolving to the `/` route),
+or a domain id; when every route is prefixed and the argument is bare it
+lists the candidates instead of guessing.
+**Correction found while testing:** the task assumed a bare hostname is always
+ambiguous when several routes exist. It is not — the `/` route prints as a
+bare hostname in `ls`, so that string is an exact match. Ambiguity only arises
+when no `/` route exists. The test was rewritten to the real semantics rather
+than forcing the code to match the assumption.
+**Tests:** `internal/daemon/api/domains_test.go` (two apps sharing a host,
+exact-pair conflict, prefix normalization, independent removal, cross-project
+refusal, cert status covering every route); `internal/cli/domains_test.go`
+(`matchDomainRoute`: bare host → `/` route, `host/prefix` exact, domain id,
+ambiguous-when-all-prefixed lists options, unknown).
+**Verified live** on a dev cluster with two nginx apps made distinguishable:
+`GET /` returned `WEB-ROOT` and `GET /api/` returned `API-BACKEND` on the same
+hostname — the case that failed outright before. Removing `/api` left the root
+route serving, and a bare `rm` against two prefixed routes printed the
+disambiguation error.
+
 ### T-105 — `zt domains` flags for route middleware
 
 Phase 9 · Depends: T-44 · Size: S

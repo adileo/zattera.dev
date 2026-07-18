@@ -53,8 +53,26 @@ func (s *DomainServer) AddDomain(ctx context.Context, req *zatterav1.AddDomainRe
 	if s.collidesWithClusterDomain(host) {
 		return nil, status.Errorf(codes.InvalidArgument, "hostname %q is in the reserved cluster subdomain namespace", host)
 	}
-	if _, exists := s.store.DomainByHostname(host); exists {
-		return nil, status.Errorf(codes.AlreadyExists, "hostname %q is already in use", host)
+	prefix := normalizePathPrefix(req.GetPathPrefix())
+
+	// A hostname may carry several routes that differ by path prefix (T-104):
+	// "/" on the web app and "/api" on the API is the point. Identity is the
+	// (hostname, prefix) pair, so only an exact repeat collides.
+	if _, exists := s.store.DomainByRoute(host, prefix); exists {
+		if prefix == "" {
+			return nil, status.Errorf(codes.AlreadyExists, "hostname %q is already in use", host)
+		}
+		return nil, status.Errorf(codes.AlreadyExists, "hostname %q with path prefix %q is already in use", host, prefix)
+	}
+	// Sharing a hostname across PROJECTS is deliberately refused: the
+	// certificate is per-hostname, so a second project claiming a path would
+	// ride on — and could disrupt — the first project's certificate. Same
+	// project, different apps is the supported case.
+	for _, other := range s.store.DomainsByHostname(host) {
+		if other.GetProjectId() != req.GetProjectId() {
+			return nil, status.Errorf(codes.PermissionDenied,
+				"hostname %q is already used by another project; a hostname cannot be shared across projects", host)
+		}
 	}
 
 	dom := &zatterav1.Domain{
@@ -63,7 +81,7 @@ func (s *DomainServer) AddDomain(ctx context.Context, req *zatterav1.AddDomainRe
 		AppId:         env.GetAppId(),
 		EnvironmentId: env.GetMeta().GetId(),
 		Hostname:      host,
-		PathPrefix:    req.GetPathPrefix(),
+		PathPrefix:    prefix,
 		PortName:      req.GetPortName(),
 		CertStatus:    zatterav1.CertStatus_CERT_STATUS_PENDING,
 	}
@@ -108,14 +126,20 @@ func (s *DomainServer) SetMiddleware(ctx context.Context, req *zatterav1.SetMidd
 // SetCertStatus updates a hostname's certificate status (best-effort callback
 // from the TLS manager: PENDING → ISSUED/FAILED). Silently no-ops for unknown
 // or implicit hostnames.
+//
+// One certificate covers a hostname regardless of how many path routes share
+// it, so the status is written to EVERY domain of that hostname — otherwise
+// `domains ls` would show one route issued and its siblings stuck pending
+// forever (T-104).
 func (s *DomainServer) SetCertStatus(ctx context.Context, hostname string, cs zatterav1.CertStatus) {
-	dom, ok := s.store.DomainByHostname(normalizeHostname(hostname))
-	if !ok || dom.GetCertStatus() == cs {
-		return
+	for _, dom := range s.store.DomainsByHostname(normalizeHostname(hostname)) {
+		if dom.GetCertStatus() == cs {
+			continue
+		}
+		dom = proto.Clone(dom).(*zatterav1.Domain)
+		dom.CertStatus = cs
+		_ = s.put(ctx, dom)
 	}
-	dom = proto.Clone(dom).(*zatterav1.Domain)
-	dom.CertStatus = cs
-	_ = s.put(ctx, dom)
 }
 
 func (s *DomainServer) collidesWithClusterDomain(host string) bool {
@@ -140,6 +164,22 @@ func (s *DomainServer) apply(ctx context.Context, cmd *clusterv1.Command) error 
 // normalizeHostname lowercases and strips a trailing dot.
 func normalizeHostname(h string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
+}
+
+// normalizePathPrefix canonicalizes a route's path prefix so "/admin",
+// "admin" and "/admin/" are the same route and cannot be registered twice.
+// Empty (the whole host) stays empty rather than becoming "/", because the
+// proxy's HasPrefix check treats "" and "/" identically and an empty value
+// keeps `domains ls` output clean.
+func normalizePathPrefix(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || p == "/" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return strings.TrimRight(p, "/")
 }
 
 // validHostname reports whether h is a syntactically valid DNS hostname.

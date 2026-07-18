@@ -42,15 +42,42 @@ zt domains rm api.mycompany.com
 Options:
 
 - `--env NAME | --prod` — target environment (default: staging).
-- `--path /admin` — only route requests whose path starts with this prefix. The prefix is **passed through unchanged**, so the app still sees `/admin/...` and must serve it.
+- `--path /admin` — only route requests whose path starts with this prefix, so several apps can [share one hostname](#custom-domains-how-to-use-splitting-one-hostname-across-apps). The prefix is **passed through unchanged**, so the app still sees `/admin/...` and must serve it.
 - `--port NAME` — target a specific service port (default: the first HTTP port).
 
 You can also declare domains per environment in [`zattera.toml`](zattera-toml) (`domains = ["api.mycompany.com"]`).
 
-::: callout warning One hostname, one environment
-A hostname can be attached **once**, cluster-wide: adding `shop.example.com` a second time fails with `hostname "shop.example.com" is already in use`, even with a different `--path`. So `--path` narrows which requests reach *that* environment — it cannot currently split one hostname across several apps (e.g. `/` → web, `/api` → api). The proxy already resolves longest-prefix per hostname; it's the uniqueness check that stands in the way, tracked as [T-104](../roadmap/tasks).
+### Splitting one hostname across apps
 
-A request that matches the hostname but not the prefix has no route and gets a **404**.
+A hostname can carry several routes that differ by path prefix, so a frontend and an API can share a domain without a separate reverse proxy:
+
+```bash
+zt domains add shop.example.com            --app web --prod   # / → web
+zt domains add shop.example.com --path /api --app api --prod  # /api → api
+```
+
+The **longest matching prefix wins**, so `/` goes to `web` and `/api/orders` goes to `api`. A request matching the hostname but no prefix at all gets a **404**.
+
+Route identity is the (hostname, prefix) pair: repeating the same pair fails with `already in use`, and `/api`, `api` and `/api/` are the same route. Removing one names it the way `zt domains ls` prints it:
+
+```bash
+zt domains ls
+# HOSTNAME              CERT
+# shop.example.com      issued
+# shop.example.com/api  issued
+
+zt domains rm shop.example.com/api    # just that route
+zt domains rm shop.example.com        # the / route
+```
+
+A bare hostname resolves to the `/` route. If every route is prefixed there is no `/` route to mean, so the command lists the candidates instead of guessing:
+
+```
+Error: "shop.example.com" has 2 routes; pass the one to remove: shop.example.com/admin, shop.example.com/api
+```
+
+::: callout note One hostname stays inside one project
+Routes on a shared hostname must belong to the same project — a second project claiming a path is rejected with `a hostname cannot be shared across projects`. The certificate is issued per hostname, so cross-project sharing would let one project ride on (and disrupt) another's certificate. Within a project, any number of apps and environments can share the host.
 :::
 
 The certificate is issued automatically on the first HTTPS request once DNS resolves to the cluster — usually within seconds. `zt domains ls` shows the status.

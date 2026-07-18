@@ -273,10 +273,10 @@ func (s *Store) PutDomain(d *zatterav1.Domain) {
 	defer s.mu.Unlock()
 	id := d.GetMeta().GetId()
 	if prev, ok := s.domains[id]; ok {
-		delete(s.domainsByHostname, prev.GetHostname())
+		s.unindexDomain(prev)
 	}
 	s.domains[id] = clone(d)
-	s.domainsByHostname[d.GetHostname()] = id
+	s.indexDomain(d)
 	s.touch(KindDomain, id)
 }
 
@@ -284,9 +284,33 @@ func (s *Store) DeleteDomain(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prev, ok := s.domains[id]; ok {
-		delete(s.domainsByHostname, prev.GetHostname())
+		s.unindexDomain(prev)
 		delete(s.domains, id)
 		s.touch(KindDomain, id)
+	}
+}
+
+// indexDomain/unindexDomain maintain hostname → {domain ids}. A hostname can
+// carry several domains that differ by path prefix (T-104), so the index is a
+// set: `/` on one app and `/api` on another are distinct routes of one host.
+// Callers must hold the lock.
+func (s *Store) indexDomain(d *zatterav1.Domain) {
+	host := d.GetHostname()
+	if s.domainsByHostname[host] == nil {
+		s.domainsByHostname[host] = map[string]bool{}
+	}
+	s.domainsByHostname[host][d.GetMeta().GetId()] = true
+}
+
+func (s *Store) unindexDomain(d *zatterav1.Domain) {
+	host := d.GetHostname()
+	ids := s.domainsByHostname[host]
+	if ids == nil {
+		return
+	}
+	delete(ids, d.GetMeta().GetId())
+	if len(ids) == 0 {
+		delete(s.domainsByHostname, host)
 	}
 }
 
@@ -300,15 +324,49 @@ func (s *Store) Domain(id string) (*zatterav1.Domain, bool) {
 	return clone(d), true
 }
 
-// DomainByHostname is used by the route builder and the ACME on-demand policy.
+// DomainByHostname returns ONE domain for a hostname — enough for the ACME
+// on-demand policy ("may this host get a certificate?"), which is per-hostname
+// and indifferent to which path route asked. When a hostname carries several
+// path routes the choice among them is arbitrary, so anything that cares about
+// the specific route must use DomainsByHostname or DomainByRoute (T-104).
 func (s *Store) DomainByHostname(hostname string) (*zatterav1.Domain, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	id, ok := s.domainsByHostname[hostname]
-	if !ok {
-		return nil, false
+	for id := range s.domainsByHostname[hostname] {
+		return clone(s.domains[id]), true
 	}
-	return clone(s.domains[id]), true
+	return nil, false
+}
+
+// DomainsByHostname returns every domain registered for a hostname, ordered by
+// path prefix (longest first) so callers see the most specific route first.
+func (s *Store) DomainsByHostname(hostname string) []*zatterav1.Domain {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*zatterav1.Domain
+	for id := range s.domainsByHostname[hostname] {
+		out = append(out, clone(s.domains[id]))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i].GetPathPrefix()) != len(out[j].GetPathPrefix()) {
+			return len(out[i].GetPathPrefix()) > len(out[j].GetPathPrefix())
+		}
+		return out[i].GetMeta().GetId() < out[j].GetMeta().GetId()
+	})
+	return out
+}
+
+// DomainByRoute looks up the exact (hostname, path prefix) pair — the identity
+// of a route, and what uniqueness is enforced on.
+func (s *Store) DomainByRoute(hostname, pathPrefix string) (*zatterav1.Domain, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for id := range s.domainsByHostname[hostname] {
+		if d := s.domains[id]; d.GetPathPrefix() == pathPrefix {
+			return clone(d), true
+		}
+	}
+	return nil, false
 }
 
 func (s *Store) ListDomains(projectID string) []*zatterav1.Domain {

@@ -120,3 +120,91 @@ func TestDomainsSetMiddlewareAndCertStatus(t *testing.T) {
 		t.Fatalf("cert status = %v, want ISSUED", got.GetCertStatus())
 	}
 }
+
+// TestDomainsSharedHostnameByPath: one hostname, several apps, split by path
+// prefix — "/" to the web app and "/api" to the API is the whole point of
+// T-104. Identity is (hostname, prefix), so only an exact repeat collides.
+func TestDomainsSharedHostnameByPath(t *testing.T) {
+	s, rs := newDomainServer(t, "apps.example.com")
+	st := rs.State()
+	// A second app in the SAME project.
+	st.PutApp(&zatterav1.App{Meta: &zatterav1.Meta{Id: "app2"}, ProjectId: "proj", Name: "web"})
+	st.PutEnvironment(&zatterav1.Environment{Meta: &zatterav1.Meta{Id: "env2"}, ProjectId: "proj", AppId: "app2", Name: "production"})
+	ctx := context.Background()
+
+	root, err := s.AddDomain(ctx, &zatterav1.AddDomainRequest{ProjectId: "proj", EnvironmentId: "env2", Hostname: "shop.example.com"})
+	if err != nil {
+		t.Fatalf("root route: %v", err)
+	}
+	api, err := s.AddDomain(ctx, &zatterav1.AddDomainRequest{ProjectId: "proj", EnvironmentId: "env", Hostname: "shop.example.com", PathPrefix: "/api"})
+	if err != nil {
+		t.Fatalf("prefixed route on the same host must be allowed: %v", err)
+	}
+	if root.GetEnvironmentId() == api.GetEnvironmentId() {
+		t.Fatal("the two routes should point at different environments")
+	}
+
+	// The exact pair is still unique.
+	if _, err := s.AddDomain(ctx, &zatterav1.AddDomainRequest{ProjectId: "proj", EnvironmentId: "env", Hostname: "shop.example.com", PathPrefix: "/api"}); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("duplicate (host,prefix) code = %v, want AlreadyExists", status.Code(err))
+	}
+
+	// Prefix normalization: "/api/", "api" and "/api" are the same route.
+	for _, variant := range []string{"/api/", "api"} {
+		if _, err := s.AddDomain(ctx, &zatterav1.AddDomainRequest{ProjectId: "proj", EnvironmentId: "env", Hostname: "shop.example.com", PathPrefix: variant}); status.Code(err) != codes.AlreadyExists {
+			t.Errorf("prefix %q should normalize onto /api, got %v", variant, status.Code(err))
+		}
+	}
+
+	// Both routes survive independently; removing one leaves the other.
+	if _, err := s.RemoveDomain(ctx, &zatterav1.RemoveDomainRequest{ProjectId: "proj", DomainId: api.GetMeta().GetId()}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if got := st.DomainsByHostname("shop.example.com"); len(got) != 1 || got[0].GetMeta().GetId() != root.GetMeta().GetId() {
+		t.Fatalf("after removing /api the root route must remain, got %d", len(got))
+	}
+}
+
+// TestDomainsHostnameNotSharedAcrossProjects: the certificate is per-hostname,
+// so a second project claiming a path on someone else's host would ride on
+// their certificate. Refused.
+func TestDomainsHostnameNotSharedAcrossProjects(t *testing.T) {
+	s, rs := newDomainServer(t, "apps.example.com")
+	st := rs.State()
+	st.PutApp(&zatterav1.App{Meta: &zatterav1.Meta{Id: "app3"}, ProjectId: "other", Name: "evil"})
+	st.PutEnvironment(&zatterav1.Environment{Meta: &zatterav1.Meta{Id: "env3"}, ProjectId: "other", AppId: "app3", Name: "production"})
+	ctx := context.Background()
+
+	if _, err := s.AddDomain(ctx, addReq("shared.example.com")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.AddDomain(ctx, &zatterav1.AddDomainRequest{ProjectId: "other", EnvironmentId: "env3", Hostname: "shared.example.com", PathPrefix: "/steal"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("cross-project claim code = %v, want PermissionDenied", status.Code(err))
+	}
+}
+
+// TestDomainsCertStatusCoversEveryRoute: one certificate serves a hostname, so
+// issuing it must mark every route of that hostname issued — otherwise
+// `domains ls` shows siblings stuck pending forever.
+func TestDomainsCertStatusCoversEveryRoute(t *testing.T) {
+	s, rs := newDomainServer(t, "apps.example.com")
+	st := rs.State()
+	st.PutApp(&zatterav1.App{Meta: &zatterav1.Meta{Id: "app2"}, ProjectId: "proj", Name: "web"})
+	st.PutEnvironment(&zatterav1.Environment{Meta: &zatterav1.Meta{Id: "env2"}, ProjectId: "proj", AppId: "app2", Name: "production"})
+	ctx := context.Background()
+
+	if _, err := s.AddDomain(ctx, addReq("multi.example.com")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddDomain(ctx, &zatterav1.AddDomainRequest{ProjectId: "proj", EnvironmentId: "env2", Hostname: "multi.example.com", PathPrefix: "/admin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	s.SetCertStatus(ctx, "multi.example.com", zatterav1.CertStatus_CERT_STATUS_ISSUED)
+	for _, d := range st.DomainsByHostname("multi.example.com") {
+		if d.GetCertStatus() != zatterav1.CertStatus_CERT_STATUS_ISSUED {
+			t.Errorf("route %q%s still %v", d.GetHostname(), d.GetPathPrefix(), d.GetCertStatus())
+		}
+	}
+}
