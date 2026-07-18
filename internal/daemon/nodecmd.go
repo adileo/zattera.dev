@@ -40,7 +40,7 @@ const (
 func nodeCommands() []*cobra.Command {
 	cluster := &cobra.Command{
 		Use:   "cluster",
-		Short: "Set up or tear down this host as a Zattera node",
+		Short: "Set up nodes and run cluster-wide operations",
 	}
 	cluster.AddCommand(newInitCmd(), newJoinCmd(), newTeardownCmd())
 	return []*cobra.Command{cluster}

@@ -25,7 +25,7 @@ const (
 func newClusterCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cluster",
-		Short: "Cluster-wide operations",
+		Short: "Set up nodes and run cluster-wide operations",
 	}
 	cmd.AddCommand(newClusterUpgradeCmd())
 	return cmd

@@ -10,10 +10,6 @@ Two ways to get your first app running on Zattera:
 - **Local dev mode** — everything on your own machine (macOS or Linux), app served on an `sslip.io` hostname. The fastest way to see the full deploy flow, fully verified end to end.
 - **Real server** — a Linux server with a public IP, apps served on `:80`/`:443` with Let's Encrypt certificates, plus optional worker nodes over the WireGuard mesh.
 
-::: callout warning Pre-alpha
-Zattera is pre-alpha and moving fast. The dev-mode path below is verified end to end; on real servers, ACME/Let's Encrypt and source builds need public DNS and registry-CA trust respectively — the notes below call this out where it matters.
-:::
-
 ::: tabs
 
 == tab Local dev mode
@@ -270,10 +266,10 @@ Installing and upgrading the binary, pinning versions, per-platform builds.
 :::
 :::
 ::: grid
-::: card Contributing icon:users
-Architecture decisions are recorded as ADRs; design discussions happen in Issues/Discussions.
+::: card Deploying apps icon:package
+Builds, environments, secrets, custom domains, and push-to-deploy from GitHub.
 
-[Architecture decision records →](../contributing/architecture-decision-records/)
+[Deployment guide →](../deploy/)
 :::
 :::
 :::
