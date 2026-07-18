@@ -3594,6 +3594,46 @@ instance back healthy; a good bump still promotes.
 
 ---
 
+### T-99 — A declared port block without `container_port` must be rejected
+
+Phase 9 · Depends: T-31 · Size: XS
+**Problem:** `ports()` in `internal/appconfig/appconfig.go` defaults the whole
+`[[env.<name>.ports]]` array to `http/8080` when it is absent, but applies **no
+default to an incomplete entry**: a block that omits `container_port` yields
+`ContainerPort: 0`. Nothing rejects it. Verified end to end on a dev cluster —
+`zt apply` prints `✓ Applied`, the deploy then starts a container with nothing
+routable, the health probe cannot resolve a target, and the deploy dies at the
+health deadline with `green instances did not become healthy in time`. The user
+gets a timeout, minutes later, for a one-line typo. Every other required field
+in this file (`[app] name`, volume `name`/`mount_path`, cron `schedule`) fails
+fast at parse time; this one should too.
+**Files:** `internal/appconfig/appconfig.go`, `internal/appconfig/appconfig_test.go`,
+`docs/deploy/zattera-toml.md`
+**Steps:**
+
+1. In `ports()`, return an error when a declared entry has
+   `container_port == 0`: `env.<name>.ports[<i>]: container_port is required`.
+   Match the existing message style (path + field + reason).
+2. Keep the absent-array default (`http/8080`) exactly as is — that is the
+   documented convenience and is widely relied on.
+3. Consider the same treatment for a port whose name duplicates another in the
+   same environment (routing keys `mesh_port_bindings` by name, so duplicates
+   silently collide — check before deciding).
+
+**Gotchas:** `ports()` currently has no error return; threading one changes
+`serviceSpec`'s signature usage. `defaultServiceSpec` in
+`internal/daemon/api/apps.go` constructs ports directly and must keep working.
+Don't reject `container_port == 0` on specs arriving over the API from older
+clients unless you also bump validation there deliberately.
+**Tests:** parse-level — a declared block without `container_port` errors and
+names the env + index; the absent array still yields `http/8080`; an explicit
+`container_port` is untouched.
+**Acceptance:** `go test ./internal/appconfig/ -run TestPorts`
+**Docs:** replace the "no default — required" note in
+`docs/deploy/zattera-toml.md` with the fail-fast rule once this lands.
+
+---
+
 # Backlog (M4/M5 — do not implement now)
 
 - **M4:** SSO/OIDC login; wildcard certs via DNS-01 (libdns providers);
@@ -3838,5 +3878,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
 P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
-P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97)
+P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31)
 ```

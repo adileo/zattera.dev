@@ -72,14 +72,17 @@ The minimal valid file is `[app] name` plus one `[env.<name>]` section.
 | `dockerfile` | `Dockerfile` | Dockerfile path |
 | `context` | `.` | Build context directory |
 | `image` | — | Prebuilt image ref (with `type = "image"`) |
+| `platforms` | cluster default | Target platforms to build, e.g. `["linux/amd64", "linux/arm64"]`. Normalized at parse time (`aarch64` → `arm64`, …); an unrecognized value is a hard error. Omitted = resolved at build time |
 | `[build.args]` | — | Build arguments (string map) |
+
+Declared `platforms` flow into the release and become a **placement constraint**: a node whose engine can't run any of them is filtered out. See [Builds](builds) for multi-arch.
 
 ### `[github]`
 
 | Key | Meaning |
 | --- | ------- |
 | `repo` | `owner/name` for [push-to-deploy](github) |
-| `previews` | Enable [preview environments](preview-environments) *(work in progress)* |
+| `previews` | Enable [preview environments](preview-environments): each pull request gets its own environment cloned from `staging` |
 
 ### `[deploy.healthcheck]`
 
@@ -95,12 +98,16 @@ The minimal valid file is `[app] name` plus one `[env.<name>]` section.
 
 If you declare nothing and the app has an HTTP port, you get the HTTP `/healthz` check with these defaults. Health checks gate [red/green promotion](./) — traffic never switches to instances that haven't passed.
 
+::: callout note A TCP/UDP-only service gets no health check by default
+The implicit check is only added when the service exposes an **HTTP** port. If every declared port is `tcp` or `udp` and you declare no `[deploy.healthcheck]`, the service has **no health check at all** — it is considered ready as soon as its container runs. Declare `type = "tcp"` (or `exec`) explicitly for databases and other L4 services.
+:::
+
 ### `[env.<name>]` — one section per environment
 
 | Key | Default | Meaning |
 | --- | ------- | ------- |
-| `replicas` | `1` | Fixed replica count (sets min = max) |
-| `min_replicas` / `max_replicas` | `1` / `1` | Replica range (the range beyond min is used by [autoscaling](../scaling/autoscaling)) |
+| `replicas` | `1` | Fixed replica count (sets min = max). **Ignored** when `min_replicas`/`max_replicas` are present |
+| `min_replicas` / `max_replicas` | `1` / `1` | Replica range (the range beyond min is used by [autoscaling](../scaling/autoscaling)). Setting only `min_replicas` makes `max` follow it, not `1` |
 | `domains` | — | [Custom domains](custom-domains) for this environment |
 | `command` | image default | Override the container command |
 | `stop_grace` | `10s` | Graceful-stop window before kill |
@@ -116,10 +123,10 @@ If you declare nothing and the app has an HTTP port, you get the HTTP `/healthz`
 | Key | Default | Meaning |
 | --- | ------- | ------- |
 | `name` | `http` | Port name (referenced by `port-forward`, domains `--port`) |
-| `container_port` | `8080` | Port the app listens on |
+| `container_port` | **none — required** | Port the app listens on |
 | `protocol` | `http` | `http`, `tcp` (L4 passthrough), or `udp` |
 
-No ports declared = one `http` port on `8080`.
+Omitting the `[[ports]]` array entirely gives you one `http` port on `8080`. But **once you declare a port block, `container_port` has no default** — leaving it out yields port `0`, which nothing can route to or health-check. The `8080` default applies to the *absent array*, not to an incomplete entry.
 
 #### `[[env.<name>.volumes]]`
 
@@ -128,7 +135,36 @@ for a `stateful` service. See [Volumes](../data/volumes).
 
 ### `[[cron]]`
 
-Global cron entries, overridable per environment with `[[env.<name>.cron]]`: `name`, `schedule` (5-field cron), `command`, `concurrency` (`forbid` default / `replace` / `allow`), `max_retries`. The leader fires each due schedule as a one-shot job in the environment's active-release image; inspect with `zt cron ls`. See [Jobs & cron](../operations/jobs#jobs-cron).
+Global cron entries: `name`, `schedule` (5-field cron, required), `command`, `concurrency` (`forbid` default / `replace` / `allow`), `max_retries`. The leader fires each due schedule as a one-shot job in the environment's active-release image; inspect with `zt cron ls`. See [Jobs & cron](../operations/jobs#jobs-cron).
+
+An environment's `[[env.<name>.cron]]` **replaces** the global list for that environment rather than adding to it — if you declare even one entry there, the global entries do not run in that environment. To keep a global schedule and add one, repeat both.
+
+## What gets rejected
+
+Two layers validate, and they fail at different moments.
+
+**Parsed locally** — `zt apply`/`zt deploy` fails before anything reaches the cluster:
+
+| Rule | Error |
+| ---- | ----- |
+| Unknown keys anywhere | `unknown keys: <list>` (every offender, sorted) |
+| `[app] name` missing | `[app] name is required` |
+| `replicas` negative | `replicas must be >= 0` |
+| `min_replicas` > `max_replicas` | `replicas.min > max (N > M)` |
+| A volume missing `name` or `mount_path` | `volumes: name and mount_path are required` |
+| A cron entry with no `schedule`, or one that isn't 5 fields | `schedule is required` / `must be a 5-field cron expression` |
+| Any duration that `time.ParseDuration` rejects, or is negative | `invalid duration "…"` / `duration must be >= 0` |
+| A `platforms` entry that isn't a known `os/arch` | `build.platforms: …` |
+
+**Checked by the server** on apply:
+
+| Rule | Why |
+| ---- | --- |
+| Environment names must be DNS-safe — `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`, so 1–40 chars, lowercase alphanumeric and dashes, not starting or ending with a dash | Names become hostnames |
+| `[app] name` follows the same rule — enforced when the app is first created, which `zt apply` does for you | Same |
+| `scale_to_zero` cannot be combined with `stateful` | A stateful service holds a single-writer volume lease and must not be torn down when idle |
+
+Environment **names are meaningful**: `production` and `staging` get those types; anything else is treated as a preview environment.
 
 ## How it's applied
 
