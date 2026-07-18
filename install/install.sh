@@ -86,6 +86,11 @@ if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet zattera 2
     systemctl stop zattera
     restart=1
 fi
+# Keep the outgoing binary so an upgrade can be undone without a download
+# (the same .prev the in-cluster upgrade writes).
+if [ -f "$bin_dir/zattera" ]; then
+    cp "$bin_dir/zattera" "$bin_dir/zattera.prev" || true
+fi
 cp "$tmp/zattera" "$bin_dir/.zattera.new"
 mv "$bin_dir/.zattera.new" "$bin_dir/zattera"
 ln -sf zattera "$bin_dir/zt"

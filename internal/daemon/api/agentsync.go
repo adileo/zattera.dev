@@ -118,6 +118,9 @@ func (s *SyncServer) Sync(stream clusterv1.AgentSyncService_SyncServer) error {
 	defer release()
 	s.log.Info("agent connected", "node", nodeID, "version", hello.GetBinaryVersion(),
 		"assignment_version", hello.GetAssignmentVersion())
+	// Record the agent's version so the cluster can answer "what is each node
+	// running" after an upgrade, without waiting for a rejoin (T-93).
+	s.recordNodeVersion(ctx, nodeID, hello.GetBinaryVersion())
 	defer s.log.Info("agent disconnected", "node", nodeID)
 
 	// The stream has a single writer (the sender goroutine); the receive loop
@@ -413,4 +416,26 @@ func applyAnywhere(ctx context.Context, applier Applier, cmd *clusterv1.Command,
 		return nil
 	}
 	return err
+}
+
+// recordNodeVersion folds the agent's reported binary version into its Node
+// record (T-93). Conditional by design: an unconditional write per stream open
+// would put a raft entry on every agent reconnect.
+func (s *SyncServer) recordNodeVersion(ctx context.Context, nodeID, reported string) {
+	if reported == "" || s.applier == nil {
+		return
+	}
+	node, ok := s.store.Node(nodeID)
+	if !ok || node.GetBinaryVersion() == reported {
+		return
+	}
+	node.BinaryVersion = reported
+	if err := s.applier.Apply(ctx, &clusterv1.Command{
+		RequestId: ids.New(),
+		Actor:     "system:agent-sync",
+		Time:      timestamppb.New(s.clock.Now()),
+		Mutation:  &clusterv1.Command_PutNode{PutNode: &clusterv1.PutNode{Node: node}},
+	}); err != nil {
+		s.log.Warn("record node version failed", "node", nodeID, "version", reported, "err", err)
+	}
 }

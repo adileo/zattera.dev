@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
+	"github.com/zattera-dev/zattera/internal/pkgutil/version"
 	"github.com/zattera-dev/zattera/pkg/apiclient"
 )
 
@@ -19,7 +20,8 @@ func newNodesCmd() *cobra.Command {
 		Aliases: []string{"node"},
 		Short:   "Inspect cluster nodes and manage join tokens",
 	}
-	cmd.AddCommand(newNodesLsCmd(), newJoinTokenCmd(), newNodesDrainCmd(), newNodesRmCmd())
+	cmd.AddCommand(newNodesLsCmd(), newJoinTokenCmd(), newNodesDrainCmd(), newNodesRmCmd(),
+		newNodeCordonCmd(false), newNodeCordonCmd(true))
 	return cmd
 }
 
@@ -132,19 +134,99 @@ func newNodesLsCmd() *cobra.Command {
 				return p.EmitJSON(resp.GetNodes())
 			}
 			rows := make([][]string, 0, len(resp.GetNodes()))
+			newest := newestVersion(resp.GetNodes())
+			skew := false
 			for _, n := range resp.GetNodes() {
+				ver := n.GetBinaryVersion()
+				if ver == "" {
+					ver = "-"
+				} else if ver != newest {
+					// Mark anything not on the newest version so skew is
+					// obvious without diffing the column by eye (T-93).
+					ver += " !"
+					skew = true
+				}
 				rows = append(rows, []string{
 					n.GetName(),
 					nodeRoles(n.GetRoles()),
-					strings.TrimPrefix(n.GetStatus().String(), "NODE_STATUS_"),
+					nodeStatusLabel(n),
+					ver,
 					n.GetMeshIp(),
 					nodeLabels(n.GetLabels()),
 				})
 			}
-			p.Table([]string{"NAME", "ROLES", "STATUS", "MESH IP", "LABELS"}, rows)
+			p.Table([]string{"NAME", "ROLES", "STATUS", "VERSION", "MESH IP", "LABELS"}, rows)
+			if skew {
+				p.Infof("! version skew — run 'zt cluster upgrade' to bring every node to %s", newest)
+			}
 			return nil
 		},
 	}
+}
+
+// nodeStatusLabel renders the status, distinguishing a cordoned node (ALIVE but
+// unschedulable) — otherwise it would read as a perfectly normal node while
+// silently receiving no new work.
+func nodeStatusLabel(n *zatterav1.Node) string {
+	label := strings.TrimPrefix(n.GetStatus().String(), "NODE_STATUS_")
+	if n.GetStatus() == zatterav1.NodeStatus_NODE_STATUS_ALIVE && !n.GetSchedulable() {
+		return label + ",CORDONED"
+	}
+	return label
+}
+
+// newestVersion returns the highest comparable version across nodes.
+func newestVersion(nodes []*zatterav1.Node) string {
+	best := ""
+	for _, n := range nodes {
+		v := n.GetBinaryVersion()
+		if v == "" || version.Parse(v).Unknown {
+			continue
+		}
+		if best == "" || version.Older(best, v) {
+			best = v
+		}
+	}
+	return best
+}
+
+func newNodeCordonCmd(uncordon bool) *cobra.Command {
+	use, short := "cordon <name>", "Stop scheduling new work on a node (running containers stay up)"
+	if uncordon {
+		use, short = "uncordon <name>", "Return a cordoned or drained node to service"
+	}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _, err := clientFromContext()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
+			ctx, cancel := cmdContext(cmd)
+			defer cancel()
+			id, err := resolveNodeID(ctx, client, args[0])
+			if err != nil {
+				return err
+			}
+			p := printerFor(cmd)
+			if uncordon {
+				if _, err := client.Nodes.UncordonNode(ctx, &zatterav1.UncordonNodeRequest{NodeId: id}); err != nil {
+					return apiError(err)
+				}
+				p.Successf("node %s is schedulable again", args[0])
+				return nil
+			}
+			if _, err := client.Nodes.CordonNode(ctx, &zatterav1.CordonNodeRequest{NodeId: id}); err != nil {
+				return apiError(err)
+			}
+			p.Successf("node %s cordoned — running containers keep serving, no new work lands here", args[0])
+			return nil
+		},
+	}
+	return cmd
 }
 
 func newJoinTokenCmd() *cobra.Command {

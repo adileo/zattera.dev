@@ -50,6 +50,7 @@ import (
 	"github.com/zattera-dev/zattera/internal/daemon/secrets"
 	"github.com/zattera-dev/zattera/internal/daemon/tlsmgr"
 	"github.com/zattera-dev/zattera/internal/daemon/tsdb"
+	"github.com/zattera-dev/zattera/internal/daemon/upgrade"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 	"github.com/zattera-dev/zattera/internal/pkgutil/platform"
@@ -427,6 +428,14 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 
 	githubWebhook, previews := api.NewGitHubWebhook(st, rs, sealer, clk, cfg.Domain, log)
 
+	// Cluster upgrade (T-95): the control plane resolves release artifacts and
+	// dials each node's agent to swap its binary.
+	nodeSrv := api.NewNodeServer(st, rs, clk, authority)
+	nodeSrv.SetUpgrader(
+		upgrade.NewHTTPResolver(upgradeBaseURL(cfg)),
+		api.GRPCUpgradeDialer{Connect: agentLocalConnect},
+	)
+
 	apiSrv, err := api.New(api.Options{
 		CA:                authority,
 		Listen:            cfg.API.Listen,
@@ -440,7 +449,7 @@ func runControlPlane(ctx context.Context, cfg config.Config, rs *raftstore.Store
 		PublicCertificate: apiPubCert,
 		DeployService:     deploySrv,
 		StateService:      api.NewStateServer(st, rs, clk),
-		NodeService:       api.NewNodeServer(st, rs, clk, authority),
+		NodeService:       nodeSrv,
 		AuditService:      auditor,
 		LogService:        api.NewLogServer(st, api.GRPCLogDialer{Connect: agentLocalConnect}, clk, log),
 		ExecService:       api.NewExecServer(st, api.GRPCExecDialer{Connect: agentLocalConnect}, log),
@@ -752,6 +761,7 @@ func registerLocalNode(ctx context.Context, rs *raftstore.Store, cfg config.Conf
 		Capacity:       &zatterav1.ResourceLimits{CpuMillis: capacity.CPUMillis, MemoryMb: capacity.MemoryMB},
 		CapacityDiskMb: capacity.DiskMB,
 		OsArch:         platform.Local(),
+		BinaryVersion:  version.Version,
 	}
 	// Preserve creation time if already registered.
 	if existing, ok := rs.State().Node(nodeID); ok {
@@ -1297,6 +1307,12 @@ func startAgentLocalServer(ctx context.Context, authority *ca.CA, cfg config.Con
 	})
 	execSrv := agent.NewExecServer(rt, log)
 	local := agent.NewLocalServer(buildSrv, execSrv, logSrv, statsSrv, rt)
+	// Self-upgrade (T-95). The node only ever downloads from its configured
+	// base URL, whatever URL the control plane hands it.
+	local.EnableSelfUpgrade(&agent.UpgradeConfig{
+		AllowedBaseURL: upgradeBaseURL(cfg),
+		Logger:         log,
+	})
 
 	serverTLS, err := authority.ServerTLSConfig([]string{"localhost"}, agentLocalIPs(cfg))
 	if err != nil {
@@ -1328,4 +1344,13 @@ func agentLocalIPs(cfg config.Config) []net.IP {
 		}
 	}
 	return ips
+}
+
+// upgradeBaseURL resolves the self-upgrade download base. Empty config means
+// the official release host, not "no restriction" — see config.UpgradeConfig.
+func upgradeBaseURL(cfg config.Config) string {
+	if cfg.Upgrade.BaseURL == "" {
+		return upgrade.DefaultBaseURL
+	}
+	return cfg.Upgrade.BaseURL
 }

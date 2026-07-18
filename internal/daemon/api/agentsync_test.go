@@ -7,8 +7,10 @@ import (
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/daemon/livestate"
+	"github.com/zattera-dev/zattera/internal/daemon/raftstore"
 	"github.com/zattera-dev/zattera/internal/daemon/secrets"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
+	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 	"github.com/zattera-dev/zattera/internal/state"
 )
 
@@ -104,3 +106,55 @@ func TestSyncServerRuntimePayload(t *testing.T) {
 		t.Fatalf("PORT should still be injected without a sealer, got %+v", rt2.GetEnv())
 	}
 }
+
+// TestNodeVersionRecording covers T-93: an agent's reported version lands in
+// its Node record, but only when it changed — an unconditional write would put
+// a raft entry on every agent reconnect.
+func TestNodeVersionRecording(t *testing.T) {
+	rs := raftstore.NewTestStore(t)
+	st := rs.State()
+	counter := &countingApplier{inner: rs}
+	nodeID := ids.New()
+	st.PutNode(&zatterav1.Node{Meta: &zatterav1.Meta{Id: nodeID}, Name: "n1", BinaryVersion: "v0.3.0"})
+
+	s := NewSyncServer(st, counter, livestate.New(clock.NewFake()), clock.NewFake(), nil, nil)
+	ctx := context.Background()
+
+	// Unchanged version: no write.
+	s.recordNodeVersion(ctx, nodeID, "v0.3.0")
+	if counter.n != 0 {
+		t.Errorf("unchanged version caused %d raft writes", counter.n)
+	}
+	// Changed version: recorded.
+	s.recordNodeVersion(ctx, nodeID, "v0.4.0")
+	if counter.n != 1 {
+		t.Fatalf("changed version caused %d writes, want 1", counter.n)
+	}
+	n, _ := st.Node(nodeID)
+	if n.GetBinaryVersion() != "v0.4.0" {
+		t.Errorf("stored version = %q", n.GetBinaryVersion())
+	}
+	// Re-reporting the new version is again a no-op.
+	s.recordNodeVersion(ctx, nodeID, "v0.4.0")
+	if counter.n != 1 {
+		t.Errorf("re-reporting wrote again: %d", counter.n)
+	}
+	// Empty version and unknown node are ignored.
+	s.recordNodeVersion(ctx, nodeID, "")
+	s.recordNodeVersion(ctx, "no-such-node", "v0.5.0")
+	if counter.n != 1 {
+		t.Errorf("empty/unknown input caused writes: %d", counter.n)
+	}
+}
+
+// countingApplier counts raft writes.
+type countingApplier struct {
+	inner Applier
+	n     int
+}
+
+func (c *countingApplier) Apply(ctx context.Context, cmd *clusterv1.Command) error {
+	c.n++
+	return c.inner.Apply(ctx, cmd)
+}
+func (c *countingApplier) IsLeader() bool { return c.inner.IsLeader() }

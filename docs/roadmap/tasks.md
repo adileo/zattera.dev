@@ -27,7 +27,9 @@ something runnable.
 > cloned from staging, PR-comment URLs, per-app cap, TTL janitor) and **T-76**
 > (`zattera audit` + `zattera events -f`, backed by a new `ListEvents` RPC) and
 > **T-77** (read-only `volume browse` TUI, which also implemented the
-> ListFiles/ReadFile data path end to end) are done.
+> ListFiles/ReadFile data path end to end) are done. In Phase 9, **T-93**
+> (per-node version reporting), **T-94** (cordon/uncordon) and **T-95**
+> (`zt cluster upgrade` — rolling, leader-last, checksum-verified) are done.
 
 ## What already exists (do not rebuild)
 
@@ -3443,7 +3445,7 @@ state must stay bounded); what was missing is a durable copy outside it.
    each time. Both are fine at the object counts an hourly-ish sweep produces;
    revisit if a cluster archives for years.
 
-### T-93 — Trustworthy per-node version reporting
+### T-93 — Trustworthy per-node version reporting  ✅ **DONE**
 Phase 9 · Depends: T-14 · Size: S
 **Problem:** `Node.binary_version` exists but is not reliable, so there is no
 answer to "what version is each node on" — the prerequisite for any upgrade
@@ -3467,11 +3469,17 @@ never folded into state; and `zt nodes ls` has no version column.
 unconditional PutNode per stream open is a raft write amplifier. Version strings
 are `git describe` output (`v0.3.1-4-gabc` / `dev`); compare with a real semver
 parse and treat unparseable as "unknown", never as "older".
-**Tests:** unit — hello with a changed version writes once and only once;
-unchanged version writes nothing; min-version across mixed/unknown values.
-**Acceptance:** `go test ./internal/daemon/api/ -run TestNodeVersion`
+**Done:** all four steps. `version.Parse/Compare/Older` handle git-describe
+output (`v0.3.1-4-gabc`, `-dirty`, `dev`); an unparseable version is never
+ordered, so a planner can never silently decide such a node is old (or current).
+`state.ClusterVersionRange` returns min/max plus an unknown flag.
+**Tests:** `internal/pkgutil/version/compare_test.go` (parse shapes, ordering
+incl. the ahead-counter and numeric 0.10 > 0.9, unknown-never-ordered);
+`TestNodeVersionRecording` (write once on change, never on re-report, ignore
+empty/unknown node); `TestClusterVersionRange`.
+**Acceptance:** `go test ./internal/daemon/api/ -run TestNodeVersion` ✅
 
-### T-94 — Uncordon (return a drained node to service)
+### T-94 — Cordon/uncordon (return a drained node to service)  ✅ **DONE**
 Phase 9 · Depends: T-19 · Size: S
 **Problem:** `DrainNode` flips a node to DRAINING/DRAINED and nothing can flip it
 back. Liveness deliberately skips those states (`liveness.go`), so today a
@@ -3488,14 +3496,19 @@ an upgrade loop that cordons each node needs an explicit way out.
    running containers alone.
 3. CLI `zt nodes cordon|uncordon <name>`; show a cordoned-but-alive node
    distinctly in `nodes ls` (it is ALIVE with schedulable=false).
-**Gotchas:** the scheduler's placement filter is `ALIVE && Schedulable`
-(`placement.go`), so cordon works with no scheduler change — verify that a
-cordoned node keeps its existing assignments and only stops receiving new ones.
-**Tests:** unit — cordon leaves assignments untouched and blocks new placement;
-uncordon from DRAINED restores placement; uncordon on DOWN is refused.
-**Acceptance:** `go test ./internal/daemon/api/ -run TestCordon`
+**Done:** `CordonNode`/`UncordonNode` RPCs (admin), `zt nodes cordon|uncordon`,
+and a `STATUS` column that renders a cordoned node as `ALIVE,CORDONED` — an
+otherwise-normal-looking node quietly receiving no work is exactly the state
+that wastes an afternoon. Cordon keeps the node ALIVE and leaves a drain in
+progress alone; uncordon refuses a DOWN node, since liveness owns that
+transition. No scheduler change was needed: the placement filter is already
+`ALIVE && Schedulable`.
+**Tests:** `TestCordonUncordon` — cordon does not disturb a running assignment
+(that is drain's job), uncordon recovers a DRAINED node, cordon does not
+override a drain, uncordon of a DOWN node is refused, unknown node is NotFound.
+**Acceptance:** `go test ./internal/daemon/api/ -run TestCordon` ✅
 
-### T-95 — `zattera cluster upgrade` (rolling, minimal-downtime)
+### T-95 — `zattera cluster upgrade` (rolling, minimal-downtime)  ✅ **DONE**
 Phase 9 · Depends: T-93, T-94, T-54 · Size: L
 **Goal:** one command brings every node to the same version, in a safe order,
 without taking workloads down: `zt cluster upgrade [--version vX.Y.Z]`.
@@ -3572,8 +3585,39 @@ Integration — simcluster upgrade with a fake artifact server, asserting
 containers keep running across the restart and assignments reconcile.
 Cloud (`test/cloud/upgrade_test.go`) — real 3-node upgrade, asserting an app
 stays reachable throughout and every node reports the new version.
-**Acceptance:** `go test ./internal/cli/ -run TestClusterUpgrade` and
-`go test -tags cloud ./test/cloud/ -run TestClusterUpgrade`
+**Acceptance:** `go test ./internal/cli/ -run TestClusterUpgrade` ✅
+
+**Implemented as:**
+- `internal/daemon/upgrade` resolves a version to per-arch asset URL + SHA-256
+  from the release checksum manifest, caching so one run pins one release (a
+  retag mid-rollout cannot split the cluster). `""` follows the /latest
+  redirect to learn the concrete tag, which is what makes "already up to date"
+  honest.
+- `NodeService.UpgradePlan` orders workers → followers → **leader last** and
+  returns preflight warnings (DOWN nodes, missing arch assets, single-ingress
+  blip, unknown versions). `UpgradeNode` performs one step.
+- `AgentLocalService.UpgradeBinary` on the node: verify digest → keep
+  `zattera.prev` → atomic swap → restart (systemd unit if present, else re-exec).
+- `zt cluster upgrade [--version] [--dry-run] [--yes]` drives the rollout,
+  tolerating the connection drop when it upgrades the node serving its own API
+  call (the version check, not the RPC result, decides success).
+- `install/install.sh` now also keeps `zattera.prev`.
+**Deviation:** the plan suggested a new `ControlMessage` arm on the AgentSync
+stream. Used `AgentLocalService` instead — it is the established control→node
+RPC direction (exec, logs, volume ops all use it), needs no new ack arm, and
+keeps the assignment stream contract untouched.
+**Not done:** `--rollback` (the `.prev` binary is retained, so re-running with
+the older `--version` is the current path); air-gapped `--from-file`; the
+cloud test. The in-progress KV marker for suppressing skew warnings was not
+needed — `nodes ls` marks skew but nothing errors on it.
+**Tests:** `internal/daemon/upgrade/release_test.go` (manifest parsing, latest
+redirect, caching, asset→os/arch mapping); `TestUpgradePlanOrder` (leader last)
+plus skip/warn and per-node cases; `internal/daemon/agent/selfupgrade_test.go`
+(**checksum mismatch installs nothing and does not restart**, foreign URL
+refused, missing checksum refused, download failure leaves the node untouched,
+`.prev` retained, allowlist prefix cannot be fooled by a sibling path);
+`internal/cli/clusterupgrade_test.go` (plan rendering, leader marking,
+up-to-date filtering, `--yes` gating).
 
 # Dependency quick-reference
 

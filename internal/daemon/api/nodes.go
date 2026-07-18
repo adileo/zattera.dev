@@ -14,6 +14,7 @@ import (
 	clusterv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/daemon/ca"
+	"github.com/zattera-dev/zattera/internal/daemon/upgrade"
 	"github.com/zattera-dev/zattera/internal/pkgutil/clock"
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 	"github.com/zattera-dev/zattera/internal/state"
@@ -34,6 +35,10 @@ type NodeServer struct {
 	raft  Applier
 	clock clock.Clock
 	ca    *ca.CA
+
+	// Cluster upgrade (T-95); nil until SetUpgrader wires them.
+	releases    upgrade.Resolver
+	upgradeDial UpgradeDialer
 }
 
 // NewNodeServer builds the node service.
@@ -120,6 +125,58 @@ func (s *NodeServer) DrainNode(ctx context.Context, req *zatterav1.DrainNodeRequ
 	}
 	n, _ := s.store.Node(req.GetNodeId())
 	return n, nil
+}
+
+// CordonNode makes a node unschedulable without draining it: running
+// containers stay up, only new placements stop. This is what a rolling binary
+// upgrade needs — DrainNode hard-stops stateful workloads, because node-pinned
+// volumes cannot move, which would turn a zero-downtime binary swap into a
+// database outage on every stateful node (T-94).
+func (s *NodeServer) CordonNode(ctx context.Context, req *zatterav1.CordonNodeRequest) (*zatterav1.Node, error) {
+	n, ok := s.store.Node(req.GetNodeId())
+	if !ok {
+		return nil, status.Error(codes.NotFound, "node not found")
+	}
+	// Leave a draining node alone: it is already unschedulable and on its way
+	// somewhere the caller did not ask for.
+	if st := n.GetStatus(); st == zatterav1.NodeStatus_NODE_STATUS_DRAINING || st == zatterav1.NodeStatus_NODE_STATUS_DRAINED {
+		return n, nil
+	}
+	if err := s.apply(ctx, &clusterv1.Command{Mutation: &clusterv1.Command_SetNodeStatus{SetNodeStatus: &clusterv1.SetNodeStatus{
+		NodeId:         req.GetNodeId(),
+		Status:         n.GetStatus(), // unchanged: a cordoned node is still ALIVE
+		SchedulableSet: true,
+		Schedulable:    false,
+	}}}); err != nil {
+		return nil, toStatus(err)
+	}
+	out, _ := s.store.Node(req.GetNodeId())
+	return out, nil
+}
+
+// UncordonNode returns a cordoned or drained node to service. Without it a
+// drained node only comes back by restarting its daemon (which re-registers it
+// as ALIVE) — liveness deliberately never reverts DRAINING/DRAINED.
+func (s *NodeServer) UncordonNode(ctx context.Context, req *zatterav1.UncordonNodeRequest) (*zatterav1.Node, error) {
+	n, ok := s.store.Node(req.GetNodeId())
+	if !ok {
+		return nil, status.Error(codes.NotFound, "node not found")
+	}
+	// A DOWN node is liveness's to resurrect: forcing it ALIVE here would let
+	// the scheduler place work on a node nobody can reach.
+	if n.GetStatus() == zatterav1.NodeStatus_NODE_STATUS_DOWN {
+		return nil, status.Error(codes.FailedPrecondition, "node is down; it returns to service when it heartbeats again")
+	}
+	if err := s.apply(ctx, &clusterv1.Command{Mutation: &clusterv1.Command_SetNodeStatus{SetNodeStatus: &clusterv1.SetNodeStatus{
+		NodeId:         req.GetNodeId(),
+		Status:         zatterav1.NodeStatus_NODE_STATUS_ALIVE,
+		SchedulableSet: true,
+		Schedulable:    true,
+	}}}); err != nil {
+		return nil, toStatus(err)
+	}
+	out, _ := s.store.Node(req.GetNodeId())
+	return out, nil
 }
 
 // RemoveNode deletes a drained node (or any node with force), reaping its

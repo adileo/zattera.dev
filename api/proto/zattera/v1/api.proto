@@ -415,8 +415,41 @@ service NodeService {
       body: "*"
     };
   }
+  // CordonNode stops new placements without touching what already runs.
+  // Unlike DrainNode this does NOT stop stateful workloads — it is the
+  // primitive a rolling binary upgrade needs (T-94/T-95).
+  rpc CordonNode(CordonNodeRequest) returns (Node) {
+    option (google.api.http) = {
+      post: "/v1/nodes/{node_id}/cordon"
+      body: "*"
+    };
+  }
+  // UncordonNode returns a cordoned or drained node to service.
+  rpc UncordonNode(UncordonNodeRequest) returns (Node) {
+    option (google.api.http) = {
+      post: "/v1/nodes/{node_id}/uncordon"
+      body: "*"
+    };
+  }
   rpc RemoveNode(RemoveNodeRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {delete: "/v1/nodes/{node_id}"};
+  }
+  // UpgradePlan returns the ordered node-by-node plan for bringing the whole
+  // cluster to one version, plus anything the operator should know before
+  // starting (T-95). Read-only.
+  rpc UpgradePlan(UpgradePlanRequest) returns (UpgradePlanResponse) {
+    option (google.api.http) = {
+      post: "/v1/cluster/upgrade/plan"
+      body: "*"
+    };
+  }
+  // UpgradeNode swaps one node's binary and restarts its daemon. The CLI drives
+  // the rollout one node at a time; this is the single step.
+  rpc UpgradeNode(UpgradeNodeRequest) returns (UpgradeNodeResponse) {
+    option (google.api.http) = {
+      post: "/v1/nodes/{node_id}/upgrade"
+      body: "*"
+    };
   }
   rpc SetNodeLabels(SetNodeLabelsRequest) returns (Node) {
     option (google.api.http) = {
@@ -442,6 +475,44 @@ message GetNodeRequest {
 
 message DrainNodeRequest {
   string node_id = 1;
+}
+
+message CordonNodeRequest {
+  string node_id = 1;
+}
+
+message UncordonNodeRequest {
+  string node_id = 1;
+}
+
+message UpgradePlanRequest {
+  string version = 1; // "" = latest release
+}
+
+message UpgradePlanResponse {
+  string target_version = 1;
+  repeated UpgradeStep steps = 2; // in the order they must be applied
+  repeated string warnings = 3;   // ingress blips, unknown versions, down nodes
+}
+
+message UpgradeStep {
+  string node_id = 1;
+  string node_name = 2;
+  string current_version = 3;
+  string os_arch = 4;
+  bool leader = 5;      // upgraded last: an old leader only proposes mutations
+                        // newer followers understand, never the reverse
+  bool up_to_date = 6;  // already on the target; the CLI skips it
+}
+
+message UpgradeNodeRequest {
+  string node_id = 1;
+  string version = 2;
+}
+
+message UpgradeNodeResponse {
+  string previous_version = 1;
+  string staged_version = 2;
 }
 
 message RemoveNodeRequest {

@@ -242,6 +242,7 @@ const (
 	AgentLocalService_ReadVolumeFile_FullMethodName  = "/zattera.cluster.v1.AgentLocalService/ReadVolumeFile"
 	AgentLocalService_WriteVolumeFile_FullMethodName = "/zattera.cluster.v1.AgentLocalService/WriteVolumeFile"
 	AgentLocalService_RemoveVolume_FullMethodName    = "/zattera.cluster.v1.AgentLocalService/RemoveVolume"
+	AgentLocalService_UpgradeBinary_FullMethodName   = "/zattera.cluster.v1.AgentLocalService/UpgradeBinary"
 )
 
 // AgentLocalServiceClient is the client API for AgentLocalService service.
@@ -265,6 +266,12 @@ type AgentLocalServiceClient interface {
 	// RemoveVolume deletes the named docker volume on this node (T-62 DeleteVolume
 	// cleanup; best effort — the control plane ignores failures).
 	RemoveVolume(ctx context.Context, in *AgentRemoveVolumeRequest, opts ...grpc.CallOption) (*AgentRemoveVolumeResponse, error)
+	// UpgradeBinary swaps this node's zattera binary and restarts the daemon
+	// (T-95). The checksum is supplied by the control plane and verified before
+	// anything is executed; workload containers are docker-managed and survive
+	// the restart. Returns once the new binary is staged — the restart happens
+	// just after, so the caller sees a reply rather than a broken connection.
+	UpgradeBinary(ctx context.Context, in *AgentUpgradeRequest, opts ...grpc.CallOption) (*AgentUpgradeResponse, error)
 }
 
 type agentLocalServiceClient struct {
@@ -459,6 +466,16 @@ func (c *agentLocalServiceClient) RemoveVolume(ctx context.Context, in *AgentRem
 	return out, nil
 }
 
+func (c *agentLocalServiceClient) UpgradeBinary(ctx context.Context, in *AgentUpgradeRequest, opts ...grpc.CallOption) (*AgentUpgradeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AgentUpgradeResponse)
+	err := c.cc.Invoke(ctx, AgentLocalService_UpgradeBinary_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentLocalServiceServer is the server API for AgentLocalService service.
 // All implementations must embed UnimplementedAgentLocalServiceServer
 // for forward compatibility.
@@ -480,6 +497,12 @@ type AgentLocalServiceServer interface {
 	// RemoveVolume deletes the named docker volume on this node (T-62 DeleteVolume
 	// cleanup; best effort — the control plane ignores failures).
 	RemoveVolume(context.Context, *AgentRemoveVolumeRequest) (*AgentRemoveVolumeResponse, error)
+	// UpgradeBinary swaps this node's zattera binary and restarts the daemon
+	// (T-95). The checksum is supplied by the control plane and verified before
+	// anything is executed; workload containers are docker-managed and survive
+	// the restart. Returns once the new binary is staged — the restart happens
+	// just after, so the caller sees a reply rather than a broken connection.
+	UpgradeBinary(context.Context, *AgentUpgradeRequest) (*AgentUpgradeResponse, error)
 	mustEmbedUnimplementedAgentLocalServiceServer()
 }
 
@@ -528,6 +551,9 @@ func (UnimplementedAgentLocalServiceServer) WriteVolumeFile(grpc.ClientStreaming
 }
 func (UnimplementedAgentLocalServiceServer) RemoveVolume(context.Context, *AgentRemoveVolumeRequest) (*AgentRemoveVolumeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemoveVolume not implemented")
+}
+func (UnimplementedAgentLocalServiceServer) UpgradeBinary(context.Context, *AgentUpgradeRequest) (*AgentUpgradeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpgradeBinary not implemented")
 }
 func (UnimplementedAgentLocalServiceServer) mustEmbedUnimplementedAgentLocalServiceServer() {}
 func (UnimplementedAgentLocalServiceServer) testEmbeddedByValue()                           {}
@@ -716,6 +742,24 @@ func _AgentLocalService_RemoveVolume_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentLocalService_UpgradeBinary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AgentUpgradeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentLocalServiceServer).UpgradeBinary(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentLocalService_UpgradeBinary_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentLocalServiceServer).UpgradeBinary(ctx, req.(*AgentUpgradeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentLocalService_ServiceDesc is the grpc.ServiceDesc for AgentLocalService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -742,6 +786,10 @@ var AgentLocalService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveVolume",
 			Handler:    _AgentLocalService_RemoveVolume_Handler,
+		},
+		{
+			MethodName: "UpgradeBinary",
+			Handler:    _AgentLocalService_UpgradeBinary_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

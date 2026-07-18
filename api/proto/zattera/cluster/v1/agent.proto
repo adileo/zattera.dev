@@ -208,6 +208,23 @@ service AgentLocalService {
   // RemoveVolume deletes the named docker volume on this node (T-62 DeleteVolume
   // cleanup; best effort — the control plane ignores failures).
   rpc RemoveVolume(AgentRemoveVolumeRequest) returns (AgentRemoveVolumeResponse);
+  // UpgradeBinary swaps this node's zattera binary and restarts the daemon
+  // (T-95). The checksum is supplied by the control plane and verified before
+  // anything is executed; workload containers are docker-managed and survive
+  // the restart. Returns once the new binary is staged — the restart happens
+  // just after, so the caller sees a reply rather than a broken connection.
+  rpc UpgradeBinary(AgentUpgradeRequest) returns (AgentUpgradeResponse);
+}
+
+message AgentUpgradeRequest {
+  string version = 1; // target version, for logging and the reply
+  string url = 2;     // asset URL for this node's os/arch
+  string sha256 = 3;  // expected digest; the agent refuses to swap without a match
+}
+
+message AgentUpgradeResponse {
+  string previous_version = 1;
+  string staged_version = 2;
 }
 
 message AgentRemoveVolumeRequest {

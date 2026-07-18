@@ -1441,7 +1441,11 @@ const (
 	NodeService_ListNodes_FullMethodName       = "/zattera.v1.NodeService/ListNodes"
 	NodeService_GetNode_FullMethodName         = "/zattera.v1.NodeService/GetNode"
 	NodeService_DrainNode_FullMethodName       = "/zattera.v1.NodeService/DrainNode"
+	NodeService_CordonNode_FullMethodName      = "/zattera.v1.NodeService/CordonNode"
+	NodeService_UncordonNode_FullMethodName    = "/zattera.v1.NodeService/UncordonNode"
 	NodeService_RemoveNode_FullMethodName      = "/zattera.v1.NodeService/RemoveNode"
+	NodeService_UpgradePlan_FullMethodName     = "/zattera.v1.NodeService/UpgradePlan"
+	NodeService_UpgradeNode_FullMethodName     = "/zattera.v1.NodeService/UpgradeNode"
 	NodeService_SetNodeLabels_FullMethodName   = "/zattera.v1.NodeService/SetNodeLabels"
 	NodeService_CreateJoinToken_FullMethodName = "/zattera.v1.NodeService/CreateJoinToken"
 )
@@ -1453,7 +1457,20 @@ type NodeServiceClient interface {
 	ListNodes(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListNodesResponse, error)
 	GetNode(ctx context.Context, in *GetNodeRequest, opts ...grpc.CallOption) (*Node, error)
 	DrainNode(ctx context.Context, in *DrainNodeRequest, opts ...grpc.CallOption) (*Node, error)
+	// CordonNode stops new placements without touching what already runs.
+	// Unlike DrainNode this does NOT stop stateful workloads — it is the
+	// primitive a rolling binary upgrade needs (T-94/T-95).
+	CordonNode(ctx context.Context, in *CordonNodeRequest, opts ...grpc.CallOption) (*Node, error)
+	// UncordonNode returns a cordoned or drained node to service.
+	UncordonNode(ctx context.Context, in *UncordonNodeRequest, opts ...grpc.CallOption) (*Node, error)
 	RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// UpgradePlan returns the ordered node-by-node plan for bringing the whole
+	// cluster to one version, plus anything the operator should know before
+	// starting (T-95). Read-only.
+	UpgradePlan(ctx context.Context, in *UpgradePlanRequest, opts ...grpc.CallOption) (*UpgradePlanResponse, error)
+	// UpgradeNode swaps one node's binary and restarts its daemon. The CLI drives
+	// the rollout one node at a time; this is the single step.
+	UpgradeNode(ctx context.Context, in *UpgradeNodeRequest, opts ...grpc.CallOption) (*UpgradeNodeResponse, error)
 	SetNodeLabels(ctx context.Context, in *SetNodeLabelsRequest, opts ...grpc.CallOption) (*Node, error)
 	CreateJoinToken(ctx context.Context, in *CreateJoinTokenRequest, opts ...grpc.CallOption) (*CreateJoinTokenResponse, error)
 }
@@ -1496,10 +1513,50 @@ func (c *nodeServiceClient) DrainNode(ctx context.Context, in *DrainNodeRequest,
 	return out, nil
 }
 
+func (c *nodeServiceClient) CordonNode(ctx context.Context, in *CordonNodeRequest, opts ...grpc.CallOption) (*Node, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Node)
+	err := c.cc.Invoke(ctx, NodeService_CordonNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeServiceClient) UncordonNode(ctx context.Context, in *UncordonNodeRequest, opts ...grpc.CallOption) (*Node, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Node)
+	err := c.cc.Invoke(ctx, NodeService_UncordonNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeServiceClient) RemoveNode(ctx context.Context, in *RemoveNodeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, NodeService_RemoveNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeServiceClient) UpgradePlan(ctx context.Context, in *UpgradePlanRequest, opts ...grpc.CallOption) (*UpgradePlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpgradePlanResponse)
+	err := c.cc.Invoke(ctx, NodeService_UpgradePlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeServiceClient) UpgradeNode(ctx context.Context, in *UpgradeNodeRequest, opts ...grpc.CallOption) (*UpgradeNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpgradeNodeResponse)
+	err := c.cc.Invoke(ctx, NodeService_UpgradeNode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1533,7 +1590,20 @@ type NodeServiceServer interface {
 	ListNodes(context.Context, *emptypb.Empty) (*ListNodesResponse, error)
 	GetNode(context.Context, *GetNodeRequest) (*Node, error)
 	DrainNode(context.Context, *DrainNodeRequest) (*Node, error)
+	// CordonNode stops new placements without touching what already runs.
+	// Unlike DrainNode this does NOT stop stateful workloads — it is the
+	// primitive a rolling binary upgrade needs (T-94/T-95).
+	CordonNode(context.Context, *CordonNodeRequest) (*Node, error)
+	// UncordonNode returns a cordoned or drained node to service.
+	UncordonNode(context.Context, *UncordonNodeRequest) (*Node, error)
 	RemoveNode(context.Context, *RemoveNodeRequest) (*emptypb.Empty, error)
+	// UpgradePlan returns the ordered node-by-node plan for bringing the whole
+	// cluster to one version, plus anything the operator should know before
+	// starting (T-95). Read-only.
+	UpgradePlan(context.Context, *UpgradePlanRequest) (*UpgradePlanResponse, error)
+	// UpgradeNode swaps one node's binary and restarts its daemon. The CLI drives
+	// the rollout one node at a time; this is the single step.
+	UpgradeNode(context.Context, *UpgradeNodeRequest) (*UpgradeNodeResponse, error)
 	SetNodeLabels(context.Context, *SetNodeLabelsRequest) (*Node, error)
 	CreateJoinToken(context.Context, *CreateJoinTokenRequest) (*CreateJoinTokenResponse, error)
 	mustEmbedUnimplementedNodeServiceServer()
@@ -1555,8 +1625,20 @@ func (UnimplementedNodeServiceServer) GetNode(context.Context, *GetNodeRequest) 
 func (UnimplementedNodeServiceServer) DrainNode(context.Context, *DrainNodeRequest) (*Node, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DrainNode not implemented")
 }
+func (UnimplementedNodeServiceServer) CordonNode(context.Context, *CordonNodeRequest) (*Node, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CordonNode not implemented")
+}
+func (UnimplementedNodeServiceServer) UncordonNode(context.Context, *UncordonNodeRequest) (*Node, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UncordonNode not implemented")
+}
 func (UnimplementedNodeServiceServer) RemoveNode(context.Context, *RemoveNodeRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemoveNode not implemented")
+}
+func (UnimplementedNodeServiceServer) UpgradePlan(context.Context, *UpgradePlanRequest) (*UpgradePlanResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpgradePlan not implemented")
+}
+func (UnimplementedNodeServiceServer) UpgradeNode(context.Context, *UpgradeNodeRequest) (*UpgradeNodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpgradeNode not implemented")
 }
 func (UnimplementedNodeServiceServer) SetNodeLabels(context.Context, *SetNodeLabelsRequest) (*Node, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetNodeLabels not implemented")
@@ -1639,6 +1721,42 @@ func _NodeService_DrainNode_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeService_CordonNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CordonNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServiceServer).CordonNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeService_CordonNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServiceServer).CordonNode(ctx, req.(*CordonNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeService_UncordonNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UncordonNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServiceServer).UncordonNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeService_UncordonNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServiceServer).UncordonNode(ctx, req.(*UncordonNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeService_RemoveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RemoveNodeRequest)
 	if err := dec(in); err != nil {
@@ -1653,6 +1771,42 @@ func _NodeService_RemoveNode_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodeServiceServer).RemoveNode(ctx, req.(*RemoveNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeService_UpgradePlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpgradePlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServiceServer).UpgradePlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeService_UpgradePlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServiceServer).UpgradePlan(ctx, req.(*UpgradePlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeService_UpgradeNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpgradeNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServiceServer).UpgradeNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeService_UpgradeNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServiceServer).UpgradeNode(ctx, req.(*UpgradeNodeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1713,8 +1867,24 @@ var NodeService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _NodeService_DrainNode_Handler,
 		},
 		{
+			MethodName: "CordonNode",
+			Handler:    _NodeService_CordonNode_Handler,
+		},
+		{
+			MethodName: "UncordonNode",
+			Handler:    _NodeService_UncordonNode_Handler,
+		},
+		{
 			MethodName: "RemoveNode",
 			Handler:    _NodeService_RemoveNode_Handler,
+		},
+		{
+			MethodName: "UpgradePlan",
+			Handler:    _NodeService_UpgradePlan_Handler,
+		},
+		{
+			MethodName: "UpgradeNode",
+			Handler:    _NodeService_UpgradeNode_Handler,
 		},
 		{
 			MethodName: "SetNodeLabels",

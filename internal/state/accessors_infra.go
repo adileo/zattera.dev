@@ -8,6 +8,7 @@ import (
 
 	internalv1 "github.com/zattera-dev/zattera/api/gen/zattera/cluster/v1"
 	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
+	"github.com/zattera-dev/zattera/internal/pkgutil/version"
 )
 
 // --- nodes & join tokens ---
@@ -37,6 +38,29 @@ func (s *Store) Node(id string) (*zatterav1.Node, bool) {
 		return nil, false
 	}
 	return clone(n), true
+}
+
+// ClusterVersionRange returns the oldest and newest comparable binary versions
+// across all nodes, and whether any node's version could not be parsed (T-93).
+// The minimum gates upgrade ordering and version-skew warnings; an unknown
+// version is reported rather than silently treated as old.
+func (s *Store) ClusterVersionRange() (min, max string, anyUnknown bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, n := range s.nodes {
+		v := n.GetBinaryVersion()
+		if version.Parse(v).Unknown {
+			anyUnknown = true
+			continue
+		}
+		if min == "" || version.Older(v, min) {
+			min = v
+		}
+		if max == "" || version.Older(max, v) {
+			max = v
+		}
+	}
+	return min, max, anyUnknown
 }
 
 func (s *Store) ListNodes() []*zatterav1.Node {

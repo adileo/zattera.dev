@@ -78,6 +78,7 @@
         { "title": "Remote debugging", "path": "/operations/remote-debug/", "icon": "bug" },
         { "title": "Access control & audit", "path": "/operations/access-control/", "icon": "lock" },
         { "title": "State export & apply", "path": "/operations/state-export/", "icon": "file-down" },
+        { "title": "Upgrades", "path": "/operations/upgrades/", "icon": "arrow-up-circle" },
         { "title": "Metrics & alerts · WIP", "path": "/operations/metrics-and-alerts/", "icon": "bar-chart" }
       ]
     },

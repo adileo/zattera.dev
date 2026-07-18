@@ -398,6 +398,39 @@
         ]
       }
     },
+    "/v1/cluster/upgrade/plan": {
+      "post": {
+        "summary": "UpgradePlan returns the ordered node-by-node plan for bringing the whole\ncluster to one version, plus anything the operator should know before\nstarting (T-95). Read-only.",
+        "operationId": "NodeService_UpgradePlan",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1UpgradePlanResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1UpgradePlanRequest"
+            }
+          }
+        ],
+        "tags": [
+          "NodeService"
+        ]
+      }
+    },
     "/v1/events/query": {
       "post": {
         "summary": "ListEvents returns platform events (deploys, node health, certificate\nrenewals), newest first. Unlike QueryAudit this is not admin-only: a\nproject member may read their own project's events, so project_id is\nrequired unless the caller is an org owner/admin.",
@@ -551,6 +584,45 @@
         ]
       }
     },
+    "/v1/nodes/{nodeId}/cordon": {
+      "post": {
+        "summary": "CordonNode stops new placements without touching what already runs.\nUnlike DrainNode this does NOT stop stateful workloads — it is the\nprimitive a rolling binary upgrade needs (T-94/T-95).",
+        "operationId": "NodeService_CordonNode",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1Node"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "nodeId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/NodeServiceCordonNodeBody"
+            }
+          }
+        ],
+        "tags": [
+          "NodeService"
+        ]
+      }
+    },
     "/v1/nodes/{nodeId}/drain": {
       "post": {
         "operationId": "NodeService_DrainNode",
@@ -619,6 +691,84 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/NodeServiceSetNodeLabelsBody"
+            }
+          }
+        ],
+        "tags": [
+          "NodeService"
+        ]
+      }
+    },
+    "/v1/nodes/{nodeId}/uncordon": {
+      "post": {
+        "summary": "UncordonNode returns a cordoned or drained node to service.",
+        "operationId": "NodeService_UncordonNode",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1Node"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "nodeId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/NodeServiceUncordonNodeBody"
+            }
+          }
+        ],
+        "tags": [
+          "NodeService"
+        ]
+      }
+    },
+    "/v1/nodes/{nodeId}/upgrade": {
+      "post": {
+        "summary": "UpgradeNode swaps one node's binary and restarts its daemon. The CLI drives\nthe rollout one node at a time; this is the single step.",
+        "operationId": "NodeService_UpgradeNode",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1UpgradeNodeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "nodeId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/NodeServiceUpgradeNodeBody"
             }
           }
         ],
@@ -2265,6 +2415,9 @@
         }
       }
     },
+    "NodeServiceCordonNodeBody": {
+      "type": "object"
+    },
     "NodeServiceDrainNodeBody": {
       "type": "object"
     },
@@ -2279,6 +2432,17 @@
         },
         "schedulable": {
           "type": "boolean"
+        }
+      }
+    },
+    "NodeServiceUncordonNodeBody": {
+      "type": "object"
+    },
+    "NodeServiceUpgradeNodeBody": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
         }
       }
     },
@@ -4563,6 +4727,75 @@
         "kind": {
           "type": "string",
           "title": "\"state\" | \"full\""
+        }
+      }
+    },
+    "v1UpgradeNodeResponse": {
+      "type": "object",
+      "properties": {
+        "previousVersion": {
+          "type": "string"
+        },
+        "stagedVersion": {
+          "type": "string"
+        }
+      }
+    },
+    "v1UpgradePlanRequest": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "title": "\"\" = latest release"
+        }
+      }
+    },
+    "v1UpgradePlanResponse": {
+      "type": "object",
+      "properties": {
+        "targetVersion": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1UpgradeStep"
+          },
+          "title": "in the order they must be applied"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "ingress blips, unknown versions, down nodes"
+        }
+      }
+    },
+    "v1UpgradeStep": {
+      "type": "object",
+      "properties": {
+        "nodeId": {
+          "type": "string"
+        },
+        "nodeName": {
+          "type": "string"
+        },
+        "currentVersion": {
+          "type": "string"
+        },
+        "osArch": {
+          "type": "string"
+        },
+        "leader": {
+          "type": "boolean",
+          "title": "upgraded last: an old leader only proposes mutations"
+        },
+        "upToDate": {
+          "type": "boolean",
+          "description": "already on the target; the CLI skips it",
+          "title": "newer followers understand, never the reverse"
         }
       }
     },

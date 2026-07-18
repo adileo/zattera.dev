@@ -53,6 +53,10 @@ var methodAuth = map[string]Requirement{
 	"/zattera.v1.NodeService/SetNodeLabels":   reqAdmin,
 	"/zattera.v1.NodeService/DrainNode":       reqAdmin,
 	"/zattera.v1.NodeService/RemoveNode":      reqAdmin,
+	"/zattera.v1.NodeService/CordonNode":      reqAdmin,
+	"/zattera.v1.NodeService/UncordonNode":    reqAdmin,
+	"/zattera.v1.NodeService/UpgradePlan":     reqAdmin,
+	"/zattera.v1.NodeService/UpgradeNode":     reqAdmin,
 
 	// --- StateService (cluster-wide desired state; admin) ---
 	"/zattera.v1.StateService/Export": reqAdmin,

@@ -40,6 +40,7 @@ type Config struct {
 	Join     JoinConfig     `toml:"join"`
 	Raft     RaftConfig     `toml:"raft"`
 	Logs     LogsConfig     `toml:"logs"`
+	Upgrade  UpgradeConfig  `toml:"upgrade"`
 }
 
 type APIConfig struct {
@@ -105,6 +106,18 @@ type RaftConfig struct {
 	// Listen for raft transport (control nodes; bound to mesh IP or
 	// 127.0.0.1 in single-node).
 	Listen string `toml:"listen"`
+}
+
+// UpgradeConfig bounds self-upgrade (T-95). The control plane chooses the
+// asset URL, but a node only downloads from BaseURL — so a control plane that
+// is compromised or misconfigured still cannot point nodes at arbitrary code.
+//
+// Empty means the official release host (upgrade.DefaultBaseURL), NOT
+// "unrestricted": a default that silently accepts any URL is the wrong way
+// round for a feature that ends in exec. Set base_url = "*" to opt out, e.g.
+// for an air-gapped mirror.
+type UpgradeConfig struct {
+	BaseURL string `toml:"base_url"`
 }
 
 type LogsConfig struct {

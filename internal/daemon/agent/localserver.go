@@ -24,7 +24,13 @@ type LocalServer struct {
 	logs  *LogServer
 	stats *StatsServer
 	rt    runtime.ContainerRuntime
+	// upgrade is nil unless self-upgrade is enabled (T-95); UpgradeBinary then
+	// reports Unimplemented.
+	upgrade *UpgradeConfig
 }
+
+// EnableSelfUpgrade turns on UpgradeBinary for this node.
+func (s *LocalServer) EnableSelfUpgrade(cfg *UpgradeConfig) { s.upgrade = cfg }
 
 // NewLocalServer builds the composite. Any sub-server may be nil (e.g. a
 // non-builder node passes build=nil); the corresponding methods then report
