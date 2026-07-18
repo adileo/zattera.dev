@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -292,19 +293,21 @@ func TestAuditEventsFollow(t *testing.T) {
 	projectFlag = ""
 	root := &cobra.Command{Use: "zattera", SilenceUsage: true, SilenceErrors: true}
 	root.AddCommand(Commands()...)
-	var out bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&bytes.Buffer{})
+	// follow writes from cobra's goroutine while this test polls from its own,
+	// so the buffer must be synchronized (a plain bytes.Buffer is not).
+	out := &syncBuffer{}
+	root.SetOut(out)
+	root.SetErr(&syncBuffer{})
 	root.SetArgs([]string{"events", "-f"})
 
 	done := make(chan error, 1)
 	go func() { done <- root.ExecuteContext(ctx) }()
 
-	waitFor(t, &out, "first event")
+	waitFor(t, out, "first event")
 
 	// An event appended while following must show up on the next poll.
 	seedEvents(t, rs, event(projectID, "node.down", "warning", "second event", 0))
-	waitFor(t, &out, "second event")
+	waitFor(t, out, "second event")
 
 	cancel()
 	select {
@@ -325,8 +328,27 @@ func TestAuditEventsFollow(t *testing.T) {
 	}
 }
 
+// syncBuffer is a bytes.Buffer safe for one writer and one reader on different
+// goroutines — the shape of a follow test.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
 // waitFor blocks until buf contains want, polling the shared buffer.
-func waitFor(t *testing.T, buf *bytes.Buffer, want string) {
+func waitFor(t *testing.T, buf *syncBuffer, want string) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {

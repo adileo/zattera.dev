@@ -18,6 +18,19 @@ Turn any pool of machines — bare metal, VPS, multi-cloud, the server under you
 Zattera is an ambitious, fast-moving experiment. We're looking for **early adopters and alpha testers** — expect sharp edges, and please [report what you find](https://github.com/zattera-dev/zattera/issues).
 :::
 
+## Why not just use Kubernetes?
+
+Zattera borrows a lot from Kubernetes — declarative desired state, continuous reconciliation, replicas, health-gated rollouts, service discovery. Those ideas are genuinely good, and we kept them.
+
+What we didn't keep is the premise. Kubernetes optimises for **universal extensibility**: every layer is a plugin point, so every cluster is assembled from a CNI, a CSI driver, an ingress controller, a cert manager, a registry, a metrics stack, and the Helm charts to glue them together. That flexibility is the right trade when you're a platform team building a platform for other teams. It's a poor trade when you just want to run your apps.
+
+Zattera is the opposite bet: **one application, not a construction kit**. Networking, storage, ingress, TLS, builds, and the registry are decided for you and shipped in the same binary — so there's nothing to integrate, no version skew between components, and no YAML sprawl to maintain. Fewer knobs, but the ones that matter work on day one and keep working.
+
+That puts Zattera in a specific sweet spot: **you've outgrown a single box, but you haven't grown a platform team.** You need several nodes, high availability, zero-downtime deploys, autoscaling, and a real deploy flow — and Kubernetes would cost you more in operational surface than the problem is worth.
+
+- **Choose Kubernetes** if you need arbitrary extensibility, an ecosystem of operators, multi-tenant isolation at scale, or you already run it well.
+- **Choose Zattera** if you want that class of capability without the platform underneath it — a handful of commands instead of hundreds of config files.
+
 ## From zero to deployed in four commands
 
 ::: steps
@@ -95,64 +108,6 @@ WireGuard mesh + gossip: multi-region, multi-cloud, and NAT'd home servers are f
 :::
 :::
 
-## What you get
-
-::: grids
-::: grid
-::: card Deploy anything icon:package
-Nixpacks auto-detection or your Dockerfile, built via BuildKit on your own builders, stored in the embedded OCI registry — no Docker Hub required.
-:::
-:::
-::: grid
-::: card Vercel-style flow icon:git-branch
-`zt deploy --prod`, GitHub push-to-deploy, staging/production/preview environments, env vars & secrets, custom domains with automatic HTTPS.
-:::
-:::
-::: grid
-::: card Red/green releases icon:refresh-cw
-The new version must be fully healthy **before** traffic switches. Instant rollback — the previous release stays warm.
-:::
-:::
-::: grid
-::: card Scale icon:trending-up
-Replica autoscaling, cross-node load balancing, scale-to-zero with wake-on-request, serverless concurrency mode.
-:::
-:::
-::: grid
-::: card Internal DNS icon:network
-Services talk cross-node via `db.production.myproject.internal` over the encrypted mesh. Staging never sees production.
-:::
-:::
-::: grid
-::: card Stateful apps icon:hard-drive
-Volumes pinned to nodes for Postgres/Redis/…, browsable from the CLI, snapshotted to S3 — incremental and content-addressed.
-:::
-:::
-::: grid
-::: card Disaster recovery icon:life-buoy
-Restore the whole platform — state, volumes, and images — onto fresh infrastructure with one command.
-:::
-:::
-::: grid
-::: card Real operations icon:activity
-Logs, metrics, alerts, jobs & cron, `zattera attach/top/fs/port-forward`, audit log, RBAC. Everything scriptable through the API.
-:::
-:::
-:::
-
-## How it works
-
-```
- CLI ──HTTPS──▶ Control plane (1–5 nodes: API · Raft · Scheduler · Builder · ACME)
-                      │ mTLS over WireGuard mesh
-        ┌─────────────┴─────────────┐
-   Worker node                 Worker node
-   agent · proxy · docker      agent · proxy · docker
-   (Hetzner, eu)               (home server, NAT)
-```
-
-You declare desired state; Raft replicates it; the scheduler continuously reconciles reality against it. Kill a node and stateless replicas reschedule in seconds. Export the whole platform as YAML with `zattera state export`.
-
 ## Explore the docs
 
 ::: grids
@@ -164,17 +119,17 @@ Install Zattera, init a cluster, and deploy your first app in minutes.
 :::
 :::
 ::: grid
-::: card Binary distribution icon:download
-How `get.zattera.dev` works: GitHub Actions builds, Releases hosts, Pages serves the installer.
+::: card Deploying apps icon:package
+Nixpacks or Dockerfile builds, environments, secrets, custom domains, and push-to-deploy from GitHub.
 
-[Read more →](distribution)
+[Deployment guide →](deploy/)
 :::
 :::
 ::: grid
-::: card Contributing icon:users
-Design discussions happen in Issues/Discussions; architecture decisions are recorded as ADRs.
+::: card Running a cluster icon:server
+Add nodes, set up high availability, configure the cluster, and roll out upgrades.
 
-[Architecture decision records →](contributing/architecture-decision-records/)
+[Cluster setup →](setup/installation)
 :::
 :::
 :::
