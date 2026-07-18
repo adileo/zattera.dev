@@ -45,7 +45,7 @@ zt cron ls api --env staging # limit to one environment
 
 ### How it works
 
-The leader evaluates every environment's schedules on a sub-minute tick. When a slot is due it enqueues a normal one-shot [job](#how-it-works) tagged with the cron name — so a cron run behaves exactly like `zt jobs run` (active-release image, sealed env vars, retries, `job/<id>` logs), and `zt jobs ls --env <env>` shows the history.
+The leader evaluates every environment's schedules on a sub-minute tick. When a slot is due it enqueues a normal one-shot [job](#jobs-cron-how-it-works) tagged with the cron name — so a cron run behaves exactly like `zt jobs run` (active-release image, sealed env vars, retries, `job/<id>` logs), and `zt jobs ls --env <env>` shows the history.
 
 - **Concurrency policy** governs what happens when a slot arrives while the previous run is still active: `forbid` (default) skips the new run, `replace` cancels the active run and starts fresh, `allow` runs them concurrently.
 - **Jitter.** Each schedule gets a deterministic 0–30s offset (hashed from env + cron name) so distinct crons sharing a slot don't all place at once.

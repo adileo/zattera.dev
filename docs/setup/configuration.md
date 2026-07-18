@@ -45,7 +45,7 @@ email = "ops@example.com"
 | `data_dir` | `/var/lib/zattera` | Root for raft state, registry blobs, logs, certs |
 | `roles` | `["control", "worker"]` | Any of `control`, `worker` |
 | `domain` | — | Cluster app domain; apps are served at `<app>-<env>.<domain>` |
-| `dev` | `false` | Single-node developer mode (see [dev mode](#dev-mode-defaults)) |
+| `dev` | `false` | Single-node developer mode (see [dev mode](#configuration-dev-mode-defaults)) |
 
 ### `[api]`
 

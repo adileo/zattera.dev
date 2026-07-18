@@ -3453,6 +3453,52 @@ not mutated, idempotent re-set allowed);
 
 ---
 
+### T-97 — Node os-arch must describe the container runtime, not the daemon binary
+
+Phase 9 · Depends: T-87, T-88 · Size: S
+**Problem:** `registerLocalNode` and the join path both set `OsArch:
+platform.Local()` (`internal/daemon/daemon.go`, `internal/daemon/join.go`),
+which is the *daemon binary's* `runtime.GOOS/GOARCH`. Containers do not run in
+the daemon — they run in Docker. On macOS the daemon is `darwin/arm64` while
+Docker Desktop runs `linux/arm64`, so since arch-aware placement (T-88) landed,
+**`--dev` on macOS cannot deploy anything at all**: every release resolves to
+`linux/*` platforms, `platform.Supports("darwin/arm64", …)` is false for all of
+them, and placement fails with "no node with a supported architecture (need one
+of linux/arm64)". Reproduced on a dev cluster with both a prebuilt image and a
+locally built one. This breaks the Local dev mode path in
+`docs/getting-started/quickstart.md`, which is the documented first-run
+experience. Linux nodes are unaffected (daemon and containers share a kernel),
+which is why CI and the cloud tests never saw it.
+**Files:** `internal/daemon/nodeinfo/nodeinfo.go` (or a new helper),
+`internal/daemon/daemon.go`, `internal/daemon/join.go`,
+`internal/daemon/runtime/` (runtime info accessor), tests alongside
+**Steps:**
+
+1. Ask the container runtime for its platform — Docker's `/info` reports
+   `OSType` and `Architecture` (`docker version --format
+   '{{.Server.Os}}/{{.Server.Arch}}'` shows `linux/arm64` on macOS). Normalize
+   through the existing `platform` alias table (`aarch64` → `arm64`, …).
+2. Use that for the node's `OsArch` **and** the `zattera.dev/os-arch` label, in
+   both the bootstrap path and the join path, so a node advertises what it can
+   actually execute.
+3. Fall back to `platform.Local()` when the runtime is unreachable, and log at
+   WARN when the two disagree — a silent mismatch is what made this hard to see.
+4. Re-check `platform.Supports` callers for anywhere else that conflates the two.
+
+**Gotchas:** the value is written at registration, so an existing dev cluster
+keeps the stale `darwin/*` until the node re-registers — make registration
+idempotently refresh it rather than only setting it on first boot. Don't break
+the multi-arch scheduling tests, which construct nodes with explicit `OsArch`.
+**Tests:** unit — a fake runtime reporting `linux/aarch64` yields `linux/arm64`;
+runtime-unreachable falls back to `platform.Local()`; a mismatch logs. Add a
+placement regression: a node whose runtime is `linux/arm64` accepts a
+`linux/arm64` release even when the daemon is `darwin/arm64`.
+**Acceptance:** `go test ./internal/daemon/... -run 'OsArch|Platform'`, plus
+`zt deploy --image nginx:alpine --prod` succeeding against `zattera server
+--dev` on macOS.
+
+---
+
 # Backlog (M4/M5 — do not implement now)
 
 - **M4:** SSO/OIDC login; wildcard certs via DNS-01 (libdns providers);
@@ -3697,5 +3743,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
 P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
-P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12)
+P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88)
 ```
