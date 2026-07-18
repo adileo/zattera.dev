@@ -3888,6 +3888,70 @@ zero dependencies, opt-in = survives losing a control node).
 
 ---
 
+### T-103 — `zt env set --from-file` (load a .env) and round-trippable `env pull`
+
+Phase 9 · Depends: T-12 · Size: S
+**Problem:** `zt env set` accepts only positional `KEY=VALUE` args
+(`internal/cli/env.go`), so uploading a `.env` is left to the shell — and the
+shell cannot do dotenv semantics. Verified on a dev cluster:
+
+- `zt env set $(cat .env | xargs)` fails on `GREETING="hello world"` with
+  `invalid KEY=VALUE: "world"`, because xargs splits on spaces.
+- Splitting on newlines instead works, but passes lines through literally:
+  `QUOTED="hello world"` is stored **with the quotes**, `export FOO=bar`
+  becomes a key literally named `export FOO`, and inline `# comments` survive
+  into the value. All silent — the command reports success.
+- Multi-line values (PEM keys) cannot be expressed at all, and `zt env pull`
+  prints them across lines, so its output does not round-trip back into
+  `env set`.
+
+Secrets that are silently wrong are worse than an error, and "paste your
+`.env`" is the single most common way a real app's config arrives.
+**Files:** `internal/cli/env.go`, `internal/cli/env_test.go`,
+`docs/deploy/environment-variables.md`, `docs/cli/reference.md`
+**Steps:**
+
+1. `zt env set --from-file <path>` (and `-` for stdin, so `cat .env | zt env
+   set --from-file -` works). Combinable with positional `KEY=VALUE` args,
+   which win on conflict — the explicit argument beats the file.
+2. Parse dotenv properly in one small, tested helper: skip blank lines and
+   `#` comments, strip an optional leading `export `, trim surrounding single
+   or double quotes, honour `\n`/`\"` escapes inside double quotes, keep `=`
+   inside values, and reject a line with no `=` naming the file and line
+   number. Do **not** do variable interpolation (`${FOO}`) — silently
+   expanding one secret into another is a footgun; reject it or leave it
+   literal, and document which.
+3. Multi-line values: support the common `KEY="line1\nline2"` escaped form.
+   Decide whether to also support real embedded newlines between quotes —
+   only if the parser stays simple.
+4. `--dry-run` printing the keys that would be set (count + names, never
+   values) so an operator can check a file before it reaches the cluster.
+5. Make `zt env pull --reveal` round-trip: quote values that contain spaces,
+   quotes, `#` or newlines, so `zt env pull --reveal > .env` followed by
+   `zt env set --from-file .env` is lossless. Add a test that asserts exactly
+   that round-trip.
+6. Consider `--replace` (delete keys absent from the file) — useful for
+   "make the environment match this file", dangerous by default, so opt-in
+   only. **Ask before adding.**
+
+**Gotchas:** never echo values in success output or errors — the existing
+`Set %d variable(s)` phrasing is right, keep it. A file with CRLF line endings
+must not leave `\r` at the end of every value (Windows users, and it is
+invisible when it breaks). Reading from stdin conflicts with `--json`
+consumers, so keep stdout clean. The env family requires `--app` (it does not
+read `zattera.toml`); do not change that here.
+**Tests:** parser table — comments, blanks, `export `, single/double quotes,
+escapes, `=` in value, empty value, CRLF, missing `=` errors with line number,
+`${VAR}` handling; precedence of positional args over file entries;
+`--dry-run` prints names and not values; pull→set round-trip preserves spaces,
+quotes and newlines exactly.
+**Acceptance:** `go test ./internal/cli/ -run TestEnvFile`
+**Docs:** replace the shell-loop section in
+`docs/deploy/environment-variables.md` (and its "the shell is not a .env
+parser" warning) with the real command, and add the flag to the CLI reference.
+
+---
+
 # Backlog (M4/M5 — do not implement now)
 
 - **M4:** SSO/OIDC login; wildcard certs via DNS-01 (libdns providers);
@@ -4132,5 +4196,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
 P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
-P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31) · T-100(35,95) · T-101(32,55)→T-102(101,64)
+P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31) · T-100(35,95) · T-101(32,55)→T-102(101,64) · T-103(12)
 ```

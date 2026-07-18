@@ -21,6 +21,42 @@ zt env unset STRIPE_KEY --app api --env production
 - `env pull` prints sorted `KEY=value` lines. Without `--reveal` the values are **empty**, not hidden-but-present, so redirecting a plain `env pull` into a `.env` file gives you keys with blank values — use `--reveal` for that.
 - Listing keys at all needs the **developer** role; a viewer cannot see even the names.
 
+### Loading a local `.env` file
+
+There is no `--from-file` flag yet ([T-103](../roadmap/tasks)), so uploading a `.env` means feeding its lines to `zt env set` as arguments. Split on **newlines**, never on whitespace:
+
+```bash
+# bash / zsh — one argument per line, values kept verbatim
+IFS=$'\n' read -r -d '' -a VARS < <(grep -vE '^\s*(#|$)' .env && printf '\0')
+zt env set "${VARS[@]}" --app api --env production
+```
+
+The obvious one-liner is the wrong one:
+
+```bash
+zt env set $(cat .env | xargs) --app api --env production   # ✗ don't
+```
+
+`xargs` splits on spaces, so `GREETING="hello world"` becomes two arguments and the command fails with `invalid KEY=VALUE: "world"` — or worse, succeeds having mangled something.
+
+::: callout warning The shell is not a `.env` parser
+Even the newline-safe version above passes lines through **literally**, which is not what dotenv tools do:
+
+| In your `.env` | What Zattera stores | What you probably meant |
+| -------------- | ------------------- | ----------------------- |
+| `QUOTED="hello world"` | `"hello world"` — quotes included | `hello world` |
+| `export FOO=bar` | key `export FOO` — with a space | key `FOO` |
+| `FOO=bar # trailing note` | `bar # trailing note` | depends on your parser |
+
+Multi-line values (PEM keys, certificates) can't come from this at all — the API stores them fine, but a shell line-splitter can't reassemble them, and `zt env pull` prints them across multiple lines, so its output no longer round-trips.
+
+**So:** use the loop for simple, unquoted files, and set anything quoted, prefixed, or multi-line explicitly:
+
+```bash
+zt env set "TLS_KEY=$(cat server.key)" --app api --env production
+```
+:::
+
 ### Changes apply on the next deploy
 
 Setting a variable does **not** hot-restart running instances. The change is folded into the next release's config hash and takes effect on the next `zt deploy` (or rollback):
