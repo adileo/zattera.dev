@@ -78,7 +78,6 @@ func (f *Fake) Snapshot() []Container {
 	return out
 }
 
-// Get returns one container by id.
 // SetRestarting flips a container into (or out of) Docker's crash-loop
 // backoff state for tests.
 func (f *Fake) SetRestarting(id string, restarting bool, exitCode int) {
@@ -90,6 +89,7 @@ func (f *Fake) SetRestarting(id string, restarting bool, exitCode int) {
 	}
 }
 
+// Get returns one container by id.
 func (f *Fake) Get(id string) (Container, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

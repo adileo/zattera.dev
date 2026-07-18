@@ -276,6 +276,11 @@ func TestEnsureUnresolvableTargetRetriesAndWarnsOnce(t *testing.T) {
 	if !mgr.monitored("a1") {
 		t.Fatal("monitor must register once the target resolves")
 	}
+	// Monitors are keyed by assignment: an unrelated id must not report as
+	// monitored just because some monitor exists.
+	if mgr.monitored("a2") {
+		t.Fatal("monitored() must be keyed by assignment id, not answer for any id")
+	}
 
 	// A fresh episode after removal warns again (once).
 	mgr.Remove("a1")
