@@ -261,6 +261,20 @@ func deploySource(ctx context.Context, client *apiclient.Client, p *ui.Printer, 
 		return err
 	}
 
+	// A prebuilt image has nothing to build or upload: deploy the ref straight
+	// through, the same path `--image` takes. Previously this fell into the
+	// source-build branch below and failed looking for a Dockerfile (T-114).
+	if ac.Build.GetType() == zatterav1.BuildType_BUILD_TYPE_IMAGE {
+		dep, derr := client.Deploys.Deploy(ctx, &zatterav1.DeployRequest{
+			ProjectId: proj, EnvironmentId: envID, ImageRef: ac.Build.GetImage(),
+		})
+		if derr != nil {
+			return apiError(derr)
+		}
+		return watchDeployment(ctx, client, p,
+			deployTarget{project: proj, app: ac.Name, env: envName, envID: envID}, dep)
+	}
+
 	dep, err := uploadSource(ctx, client, proj, ac.Name, envID, ac.Build.GetType())
 	if err != nil {
 		return err

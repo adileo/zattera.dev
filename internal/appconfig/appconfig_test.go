@@ -216,3 +216,38 @@ func TestConfigHashStableAndSensitive(t *testing.T) {
 		t.Error("hash differs for equal specs from independent parses")
 	}
 }
+
+// TestParseImageBuild covers the prebuilt-image build type (T-114). The ref has
+// to survive onto BuildConfig — it used to be parsed into a field nothing read,
+// so `type = "image"` silently fell through to a source build.
+func TestParseImageBuild(t *testing.T) {
+	cfg, err := Parse([]byte("[app]\nname='db'\n[build]\ntype='image'\nimage='postgres:16'\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := cfg.Build.GetType(); got != zatterav1.BuildType_BUILD_TYPE_IMAGE {
+		t.Fatalf("build type = %v, want IMAGE", got)
+	}
+	if got := cfg.Build.GetImage(); got != "postgres:16" {
+		t.Fatalf("build image = %q, want postgres:16", got)
+	}
+}
+
+func TestParseImageBuildValidation(t *testing.T) {
+	cases := []struct{ name, toml, want string }{
+		{"type without image", "[app]\nname='x'\n[build]\ntype='image'\n", `requires build.image`},
+		{"image without type", "[app]\nname='x'\n[build]\nimage='postgres:16'\n", `only valid with build.type = "image"`},
+		{"image with dockerfile type", "[app]\nname='x'\n[build]\ntype='dockerfile'\nimage='postgres:16'\n", `only valid with build.type = "image"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.toml))
+			if err == nil {
+				t.Fatalf("expected an error containing %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}

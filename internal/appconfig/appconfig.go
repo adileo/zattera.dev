@@ -26,13 +26,12 @@ import (
 )
 
 // AppConfig is the parsed, defaulted result. Build/Services/Domains are exactly
-// what ApplyAppConfigRequest wants; IdleTimeouts and Image carry fields that do
-// not fit into ServiceSpec.
+// what ApplyAppConfigRequest wants; IdleTimeouts carries a field that does not
+// fit into ServiceSpec. A prebuilt image ref lives on Build.Image.
 type AppConfig struct {
 	Name     string
 	Build    *zatterav1.BuildConfig
 	GitHub   *zatterav1.GitHubConfig
-	Image    string // pre-built image ref when [build] type = "image"
 	Services map[string]*zatterav1.ServiceSpec
 	Domains  map[string][]string
 	// IdleTimeouts is the scale-to-zero idle window per env (lives on
@@ -168,7 +167,6 @@ func build(f *file) (*AppConfig, error) {
 	cfg := &AppConfig{
 		Name:         f.App.Name,
 		Build:        bc,
-		Image:        buildImage(f.Build),
 		Services:     map[string]*zatterav1.ServiceSpec{},
 		Domains:      map[string][]string{},
 		IdleTimeouts: map[string]time.Duration{},
@@ -208,6 +206,16 @@ func buildConfig(b *buildSection) (*zatterav1.BuildConfig, error) {
 		return bc, nil
 	}
 	bc.Type = buildType(b.Type)
+	// A prebuilt image and a build are mutually exclusive, and each half is
+	// useless without the other. Both mismatches used to parse cleanly and then
+	// do nothing at deploy time, which is worse than an error (T-114).
+	if bc.Type == zatterav1.BuildType_BUILD_TYPE_IMAGE && b.Image == "" {
+		return nil, fmt.Errorf(`appconfig: build.type = "image" requires build.image (e.g. image = "postgres:16")`)
+	}
+	if b.Image != "" && bc.Type != zatterav1.BuildType_BUILD_TYPE_IMAGE {
+		return nil, fmt.Errorf(`appconfig: build.image is only valid with build.type = "image"`)
+	}
+	bc.Image = b.Image
 	if b.Dockerfile != "" {
 		bc.DockerfilePath = b.Dockerfile
 	}
@@ -228,13 +236,6 @@ func buildConfig(b *buildSection) (*zatterav1.BuildConfig, error) {
 		bc.Platforms = append(bc.Platforms, n)
 	}
 	return bc, nil
-}
-
-func buildImage(b *buildSection) string {
-	if b == nil {
-		return ""
-	}
-	return b.Image
 }
 
 func buildType(s string) zatterav1.BuildType {

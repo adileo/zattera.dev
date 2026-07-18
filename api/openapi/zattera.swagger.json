@@ -2932,6 +2932,10 @@
             "type": "string"
           },
           "description": "OCI platforms to build for (\"linux/amd64\"); empty = cluster-arch default\nresolved at build time."
+        },
+        "image": {
+          "type": "string",
+          "description": "image is the prebuilt ref to deploy when type = BUILD_TYPE_IMAGE\n(e.g. \"postgres:16\"). Nothing is built: the agent pulls this ref directly.\nRequired for that type, and meaningless for the others."
         }
       },
       "description": "BuildConfig mirrors [build] in zattera.toml."

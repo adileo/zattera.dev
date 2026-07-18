@@ -4391,6 +4391,41 @@ Volume record; the reaper retries and clears it once the node is ALIVE; a
 not-found delete clears the tombstone; tombstones expire and log.
 **Acceptance:** `go test ./internal/daemon/api/ ./internal/daemon/scheduler/ -run Volume`
 
+### T-114 — `[build] type = "image"` was parsed and thrown away ✅ **DONE**
+
+Phase 9 · Depends: T-26 · Size: S
+**Problem:** `appconfig` parsed `[build] image = "postgres:16"` into
+`AppConfig.Image`, a field with **zero consumers**, and `BuildConfig` had no
+`image` field at all — so the ref never reached the server. `BUILD_TYPE_IMAGE`
+appeared only where it was parsed and in a CLI display label; no builder branch
+handled it. A `zt deploy` on such a toml fell into the source-build path, tarred
+the directory and failed looking for a Dockerfile. This is the natural way to
+declare a database or any off-the-shelf image, and it silently did not work.
+Found while scoping the multi-service deploy guide.
+**Files:** `api/proto/zattera/v1/app.proto`, `internal/appconfig/appconfig.go`,
+`internal/cli/deploy.go`
+**Done:**
+
+1. `BuildConfig.image` (field 6) so the ref is persisted by `ApplyAppConfig`
+   rather than living only in a client-side struct.
+2. `zt deploy` deploys that ref directly when the type is `image` — the same
+   path `--image` already took — instead of uploading source.
+3. Validation, because both halves were previously silent no-ops:
+   `type = "image"` without `image` and `image` without `type = "image"` are
+   now parse errors.
+4. Removed `AppConfig.Image`: with the value on `Build.Image` it was a second
+   source of truth that nothing read.
+
+**Gotchas:** the agent pulls the ref directly at container start
+(`runtime/docker.go` `EnsureImage`) — there is no registry mirroring, so the
+node needs egress to the source registry. `executor.go` passes the cluster
+registry credential on every pull regardless of the ref's host, which is worth
+a separate look for public images.
+**Tests:** `TestParseImageBuild`, `TestParseImageBuildValidation`, plus a live
+dev-cluster deploy of `postgres:16-alpine` from a toml alone — volume mounted,
+env injected, TCP healthcheck green, `pg_isready` accepting connections.
+**Acceptance:** `go test ./internal/appconfig/ ./internal/cli/`
+
 ---
 
 # Backlog (M4/M5 — do not implement now)
@@ -4637,5 +4672,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
 P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
-P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31) · T-100(35,95) · T-101(32,55)→T-102(101,64) · T-103(12) · T-104(44) · T-105(44) · T-106(51) · T-107(19) · T-108(11) · T-109(74)→T-110(109,14) · T-111(03)→T-112(111) · T-113(62)
+P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31) · T-100(35,95) · T-101(32,55)→T-102(101,64) · T-103(12) · T-104(44) · T-105(44) · T-106(51) · T-107(19) · T-108(11) · T-109(74)→T-110(109,14) · T-111(03)→T-112(111) · T-113(62) · T-114(26)
 ```

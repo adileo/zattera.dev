@@ -27,6 +27,10 @@ message BuildConfig {
   // OCI platforms to build for ("linux/amd64"); empty = cluster-arch default
   // resolved at build time.
   repeated string platforms = 5;
+  // image is the prebuilt ref to deploy when type = BUILD_TYPE_IMAGE
+  // (e.g. "postgres:16"). Nothing is built: the agent pulls this ref directly.
+  // Required for that type, and meaningless for the others.
+  string image = 6;
 }
 
 enum BuildType {
