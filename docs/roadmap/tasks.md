@@ -3982,6 +3982,138 @@ another app produced a byte-identical `diff`.
 
 ---
 
+### T-104 — A hostname should be shareable across apps by path prefix
+
+Phase 9 · Depends: T-44 · Size: S
+**Problem:** `AddDomain` rejects a hostname that already exists
+(`s.store.DomainByHostname(host)` in `internal/daemon/api/domains.go`), and the
+state index `domainsByHostname` is keyed by hostname alone. So `--path` can
+only narrow which requests reach the ONE environment that owns the hostname —
+the documented use case ("different apps can share one hostname") is
+impossible. Verified: adding `shop.example.com --path /admin` then
+`shop.example.com` fails with `hostname "shop.example.com" is already in use`.
+The data plane is already there: `pickRoute` (`internal/daemon/proxy/l7.go`)
+matches every route for a hostname and takes the **longest** path prefix, so
+`/` → web and `/api` → api would work the moment the API allowed it. This is
+the natural way to put a frontend and an API on one domain without a separate
+reverse proxy.
+**Files:** `internal/daemon/api/domains.go`, `internal/state/accessors_infra.go`,
+`internal/state/state.go` (index), `docs/deploy/custom-domains.md`
+**Steps:**
+
+1. Key the uniqueness check on **(hostname, path_prefix)** rather than
+   hostname: adding the same hostname with a different prefix succeeds, the
+   same pair still conflicts with `AlreadyExists`.
+2. Update the `domainsByHostname` index to hold the set of domains per
+   hostname (callers that want "the domain for this host" need to say which
+   path, or get all of them). Audit every caller — cert issuance and
+   `collidesWithClusterDomain` both look hostnames up.
+3. One certificate per hostname regardless of how many path routes share it:
+   the ACME manager keys on hostname, so it must not issue twice or fight
+   itself when two environments own different prefixes of one host.
+4. `zt domains ls` must show the prefix (it already prints `host/prefix`) and
+   `zt domains rm` must take the prefix to disambiguate — removing
+   `shop.example.com` when two routes exist has to be unambiguous, not
+   "delete the first one".
+
+**Gotchas:** cross-project sharing is a policy question, not just a uniqueness
+one — letting project A claim `/api` on project B's hostname is a
+privilege-escalation shaped hole. **Ask before allowing it**; the safe default
+is to require the same project. Certificate ownership follows the hostname, so
+whoever adds the first route effectively controls issuance. `path_prefix`
+normalization matters (`/admin` vs `/admin/`) or the same prefix will be
+addable twice.
+**Tests:** same host + different prefixes both add and route (longest wins);
+same host + same prefix conflicts; `rm` with a prefix removes only that route;
+one certificate covers all routes of a hostname; cross-project attempt is
+rejected (or allowed, per the decision above) with a test either way.
+**Acceptance:** `go test ./internal/daemon/api/ -run TestDomain`
+**Docs:** replace the "One hostname, one environment" warning in
+`docs/deploy/custom-domains.md` with the working pattern.
+
+### T-105 — `zt domains` flags for route middleware
+
+Phase 9 · Depends: T-44 · Size: S
+**Problem:** `Middleware` (`api/proto/zattera/v1/domain.proto`) is enforced by
+the proxy today — basic auth, IP allowlist, max body size, compression, sticky
+sessions, HTTPS redirect (`internal/daemon/proxy/l7.go`) — and `SetMiddleware`
+is implemented and RBAC-gated. But `internal/cli/domains.go` exposes no flag
+for any of it, so a working feature is reachable only by calling the API by
+hand. Basic auth on a staging domain and an IP allowlist on an admin path are
+exactly the things an operator reaches for on day one. Same server-without-a-
+client shape as T-96 (node labels).
+**Files:** `internal/cli/domains.go`, `internal/cli/domains_test.go`,
+`docs/deploy/custom-domains.md`, `docs/cli/reference.md`
+**Steps:**
+
+1. `zt domains set <hostname> [--path P]` with `--basic-auth user:password`
+   (hash client-side — the plaintext password must never reach the API or the
+   audit log), `--ip-allow CIDR` (repeatable), `--max-body 10MB`,
+   `--compress=false`, `--sticky`, `--redirect-https=false`.
+2. Read-modify-write: `SetMiddleware` replaces the whole message, so unset
+   flags must preserve their current values or every call silently clears the
+   others.
+3. `zt domains ls` should show which middleware is active (a compact column,
+   never the password hash).
+4. Decide how to clear a value (`--ip-allow=""`? a `--clear-ip-allow`?) and
+   keep it consistent with `zt nodes label`'s `KEY-` removal style.
+
+**Gotchas:** bcrypt/argon2id hashing belongs client-side; if it is done
+server-side the plaintext travels in the request and lands in the audit log.
+`max_body_bytes` is a uint64 of bytes — accept human sizes (`10MB`) but store
+bytes. Enabling basic auth on a route that scale-to-zero wakes must not break
+the wake path (the probe request also passes through middleware — check).
+**Tests:** each flag maps to the right proto field; unset flags are preserved
+across calls; the password is hashed before it leaves the CLI (assert the
+request carries no plaintext); `ls` never prints the hash.
+**Acceptance:** `go test ./internal/cli/ -run TestDomainsMiddleware`
+**Docs:** replace the "API-only" note in the middleware table in
+`docs/deploy/custom-domains.md` with the real commands.
+
+---
+
+### T-106 — `port-forward` fails in dev mode, and reports success either way
+
+Phase 9 · Depends: T-51 · Size: S
+**Problem:** `resolvePortTarget` (`internal/daemon/api/execsvc.go`) skips every
+candidate whose node has no mesh IP and dials `node.MeshIp:hostPort`. In
+`--dev` the mesh is disabled, so `mesh_ip` is empty on the only node and the
+RPC can never resolve a target: **`zt port-forward` is dead in dev mode**,
+which is the environment the quickstart tells a new user to start in.
+Reproduced: listener binds, `curl` returns `000`, nothing is logged.
+Worse, the CLI prints `✓ Forwarding 127.0.0.1:18082 → site (port http)`
+**before** any byte flows, so an unresolvable target still looks like success —
+in dev *and* in production. A user sees a green check and a connection that
+silently hangs.
+**Files:** `internal/daemon/api/execsvc.go`, `internal/cli/portforward.go`,
+tests alongside
+**Steps:**
+
+1. Dev/mesh-disabled path: when a node has no mesh IP, fall back to the
+   published host port on the node's own address (the executor already
+   reports `mesh_port_bindings`, and dev publishes on `127.0.0.1`). The health
+   prober solved the same problem with `useHostPort` — reuse that idea rather
+   than inventing a second one.
+2. Fail loudly instead of hanging: `resolvePortTarget` returning `Unavailable`
+   must reach the user as an error, not a success line followed by a dead
+   socket.
+3. Move the CLI's `✓ Forwarding` line **after** the first successful dial (or
+   print `listening…` first and confirm on connect), so the check mark means
+   "this works", not "a socket is open".
+
+**Gotchas:** don't regress the production path, where dialing the mesh IP is
+correct and the host port may not be published on a routable interface. A
+single-node prod cluster (mesh enabled, one node) must keep working. The
+stream is bidirectional — surfacing the resolve error means propagating it
+before the copy loops start.
+**Tests:** resolve returns the host-port target when the node has no mesh IP
+and the mesh target when it does; a failed resolve surfaces as a CLI error
+with a non-zero exit; no success line is printed before the first dial.
+**Acceptance:** `go test ./internal/daemon/api/ -run TestPortForward`, plus
+`zt port-forward` actually serving traffic against `zattera server --dev`.
+
+---
+
 # Backlog (M4/M5 — do not implement now)
 
 - **M4:** SSO/OIDC login; wildcard certs via DNS-01 (libdns providers);
@@ -4226,5 +4358,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
 P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
-P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31) · T-100(35,95) · T-101(32,55)→T-102(101,64) · T-103(12)
+P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54) · T-96(12) · T-97(87,88) · T-98(63,97) · T-99(31) · T-100(35,95) · T-101(32,55)→T-102(101,64) · T-103(12) · T-104(44) · T-105(44) · T-106(51)
 ```
