@@ -13,8 +13,13 @@ From inside any container, address a sibling service as:
 
 ```
 <app>.<env>.<project>.internal      # e.g. db.production.myshop.internal
-<app>.internal                       # shorthand within the same environment
+<app>.internal                       # shorthand, same thing
 ```
+
+Both forms address a service **in your own project and environment** — the long
+form is not a way to reach another environment. A lookup for a service in a
+different project or environment returns NXDOMAIN, which is what makes the
+isolation below absolute.
 
 Example: your API's `DATABASE_URL` in production is simply
 
@@ -42,4 +47,4 @@ Each environment network's gateway runs a tiny authoritative DNS server for `.in
 
 Every service/environment gets a cluster-unique VIP from `10.97.0.0/16`. Each node programs the VIPs locally and splices connections to a healthy instance — on the same node directly to the container, or across the [WireGuard mesh](mesh) to the instance's node (P2C balancing, health-gated, same machinery as the [public ingress](ingress)). Internal traffic between nodes is therefore always encrypted.
 
-Current limitation: VIP forwarding is **TCP-only** (UDP internal ports are skipped), and Linux-only — on macOS dev machines single-node `.internal` resolution still works, since everything is local.
+Current limitations: VIP forwarding is **TCP-only** (UDP internal ports are skipped) and **Linux-only**. Separately, **`--dev` mode does not run the internal service mesh at all** — neither the VIP proxy nor the resolver starts, so `.internal` names do not resolve on a single-node dev cluster on any platform. Use [`zt port-forward`](../operations/remote-debug) locally, and test service-to-service naming on a real cluster.

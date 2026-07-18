@@ -107,6 +107,13 @@ Replicas, ports, health checks, resources, volumes, and placement.
 :::
 :::
 ::: grid
+::: card Multiple services icon:layers
+An API, a worker and a database side by side — one file each, wired by internal DNS.
+
+[Multi-service & monorepos →](multi-service)
+:::
+:::
+::: grid
 ::: card Builds icon:package
 Nixpacks and Dockerfile builds, BuildKit, the embedded registry, multi-arch.
 

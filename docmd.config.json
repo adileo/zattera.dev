@@ -53,6 +53,7 @@
       "children": [
         { "title": "Deploying", "path": "/deploy/", "icon": "play" },
         { "title": "zattera.toml", "path": "/deploy/zattera-toml/", "icon": "file-text" },
+        { "title": "Multiple services & monorepos", "path": "/deploy/multi-service/", "icon": "layers" },
         { "title": "Builds & registry", "path": "/deploy/builds/", "icon": "package" },
         { "title": "Environment variables", "path": "/deploy/environment-variables/", "icon": "key" },
         { "title": "Custom domains", "path": "/deploy/custom-domains/", "icon": "globe" },
