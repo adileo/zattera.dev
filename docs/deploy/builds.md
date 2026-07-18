@@ -5,7 +5,7 @@ description: Dockerfile and Nixpacks builds on your own hardware, stored in the 
 
 # Builds & registry
 
-Zattera builds your app **on your own machines** and stores images in an **embedded OCI registry** replicated with the cluster — no Docker Hub account, no external registry, no vendor build minutes.
+Zattera builds your app **on your own machines** and stores images in an **embedded OCI registry** running on your control nodes — no Docker Hub account, no external registry, no vendor build minutes.
 
 ## How to use
 
@@ -59,6 +59,18 @@ If no builder is schedulable — you cordoned the only one — the build **stays
 ### The embedded registry
 
 Every **control** node serves an OCI registry on `:5000` (TLS with the cluster CA; `:5001` plain HTTP in dev mode) — worker nodes host no blobs, and the join flow points them at a control node's registry address. Blobs are content-addressed, so shared layers are stored once. Agents pull over the mesh with per-node credentials minted at join time.
+
+::: callout warning Blobs are node-local, not replicated
+Each control node's registry is **independent storage on its own disk** — image blobs and the tag/refcount graph live in `<data-dir>/registry/`, deliberately outside raft (raft replicates platform *state*, and multi-gigabyte layers have no business in a consensus log). Nothing copies a blob from one control node to another.
+
+For a single-control cluster this is simply how it works. On a **multi-control** cluster it has consequences worth knowing before you rely on HA:
+
+- Storage does **not** multiply — a 5 GB image consumes 5 GB once, not once per control node.
+- An image is only on the node whose registry received the push, so **losing that node makes those images unpullable** until they're rebuilt. A raft quorum keeps the control plane alive; it does not keep your images available.
+- Backups cover state, the CA, and volume snapshots — **not** registry blobs. Disaster recovery restores the platform, then images must be rebuilt or re-pushed.
+
+If you run multiple control nodes today, treat "can I rebuild every running image from source?" as the real recovery question, and keep external base images pullable.
+:::
 
 ::: callout note Registry CA trust on multi-node clusters
 Docker verifies registry TLS against its own trust store, so nodes that pull cluster-built images need the cluster CA installed under `/etc/docker/certs.d/<registry-addr>/ca.crt`. `zattera cluster join` handles this; prebuilt public images need nothing.
