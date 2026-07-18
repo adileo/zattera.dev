@@ -12,24 +12,28 @@ running workloads never stop. A single-control cluster (the default) works fine
 and can run workloads too — HA is what you turn on when control-plane downtime is
 unacceptable.
 
-Multi-control HA is verified end to end on a real cluster: raft failover and
-gossip failure detection (T-55/T-55b/T-56, `test/cloud/ha_test.go`) and mesh hub
-+ worker failover (T-55c, `test/cloud/multihub_test.go`).
+Both halves are exercised against real infrastructure, not only in unit tests:
+raft failover with gossip failure detection (`test/cloud/ha_test.go`) and mesh
+hub + worker failover (`test/cloud/multihub_test.go`).
 
 ## How many control nodes
 
 Raft needs a **majority** to commit writes, so run an **odd** number and size for
 the failures you want to tolerate:
 
-| Control nodes | Tolerates | Notes |
-|---|---|---|
-| 1 | none | default; control-plane writes pause if it's down (data plane keeps running) |
-| 3 | 1 | the usual HA choice |
-| 5 | 2 | for larger or more failure-prone fleets |
+| Control nodes | Majority | Tolerates | Notes |
+|---|---|---|---|
+| 1 | 1 | none | default; control-plane writes pause if it's down (data plane keeps running) |
+| 2 | 2 | **none** | strictly worse than 1 — see below |
+| 3 | 2 | 1 | the usual HA choice |
+| 5 | 3 | 2 | for larger or more failure-prone fleets |
 
-Even counts buy you nothing (4 tolerates the same 1 failure as 3, at higher
-write-quorum cost). Worker nodes are unlimited and add no quorum cost — add as
-many as you like.
+Even counts buy you nothing: 4 tolerates the same single failure as 3, at a
+higher write-quorum cost. **Two is actively worse than one** — the majority is
+still 2, so either node failing stops writes, and you've doubled the chance of
+that happening. Go from 1 straight to 3.
+
+Worker nodes are unlimited and add no quorum cost — add as many as you like.
 
 ## Adding a control node
 
@@ -81,12 +85,22 @@ give them the same protection you'd give the bootstrap node.
 ## Removing a control node
 
 ```bash
-zattera nodes rm <name>
+zt nodes drain control-2      # move its workloads off first
+zt nodes rm control-2
 ```
 
-On a control node this also removes it from the raft configuration (`RemoveServer`)
-before deleting the record. The cluster refuses to remove the **last** control
-node (that would destroy the quorum). Drain first if it's running workloads.
+A control node leaves the **raft quorum first**, then its record is deleted — if
+the quorum removal fails you get a retryable error with the node intact, rather
+than an orphaned voter that no longer maps to a node.
+
+Two refusals protect you, both overridable with `--force`:
+
+- the node isn't `DRAINED` — drain it first, or force if it's already gone;
+- it's the **last** control node — forcing that leaves the cluster with no
+  quorum, so only do it while tearing a cluster down.
+
+Shrink one node at a time and wait for `zt nodes ls` to settle in between: going
+from 3 to 1 in one step passes through 2, where a single failure stops writes.
 
 ## The mesh survives too — hub failover
 
@@ -128,9 +142,49 @@ verified by the chaos suite (`go test -tags chaos ./test/chaos/ -run TestQuorum`
 - **Public endpoints.** Give each control node a reachable `[mesh] public_endpoints`
   so workers and the other control nodes can dial it — a control node that can't be
   reached can't serve as a hub or a failover target.
-- **Firewall.** Open the WireGuard UDP port (default `51820`) and the API/raft/gossip
-  ports between control nodes. Workers only need to reach control nodes' public
-  endpoints and API.
+- **Firewall.** Open `51820/udp` (WireGuard) and `8443/tcp` (API). That's it:
+  raft (`7480`) and gossip (`7946`) bind the node's **mesh IP**, so they travel
+  inside the encrypted tunnel and must *not* be exposed publicly — opening them
+  puts the quorum's transport on the internet for no benefit.
 - **DNS / traffic.** Point your ingress DNS at all control nodes (or a load balancer
   across them); ingress runs on every control node, and scale-to-zero wakes forward
   to the leader from whichever control node receives the request.
+- **Upgrades.** [`zt cluster upgrade`](../operations/upgrades) rolls nodes one at
+  a time and takes the raft **leader last**, which is a correctness requirement,
+  not a preference. Don't hand-upgrade a leader ahead of its followers.
+- **HA is not backup.** Raft replicates state to every control node, including
+  your mistakes — a bad `state apply` replicates just as reliably as a good one.
+  Keep [backups](../data/backup-restore) running.
+
+## Next steps
+
+::: grids
+::: grid
+::: card Nodes icon:server
+Join tokens, cordon and drain, labels and placement.
+
+[Manage nodes →](nodes)
+:::
+:::
+::: grid
+::: card Mesh icon:network
+How the WireGuard overlay, hubs, and NAT traversal fit together.
+
+[Networking →](../networking/mesh)
+:::
+:::
+::: grid
+::: card Backup & restore icon:life-buoy
+Snapshot platform state and volumes; rebuild onto fresh infrastructure.
+
+[Disaster recovery →](../data/backup-restore)
+:::
+:::
+::: grid
+::: card Upgrades icon:refresh-cw
+Rolling cluster upgrades, leader last, with checksum-pinned binaries.
+
+[Upgrade guide →](../operations/upgrades)
+:::
+:::
+:::

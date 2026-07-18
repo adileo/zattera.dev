@@ -27,7 +27,7 @@ A job is scheduled like a service instance — placed on a node with capacity by
 
 ## Cron
 
-Declare scheduled runs with [`[[cron]]` sections in zattera.toml](../deploy/zattera-toml#cron) — `name`, `schedule` (5-field cron), `command`, `concurrency` policy, and `max_retries`:
+Declare scheduled runs with [`[[cron]]` sections in zattera.toml](../deploy/zattera-toml#zatteratoml-reference-cron) — `name`, `schedule` (5-field cron), `command`, `concurrency` policy, and `max_retries`:
 
 ```toml
 [[cron]]

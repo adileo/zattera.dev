@@ -26,13 +26,13 @@ The control plane derives a **routing table** from desired state — hostname (+
 
 ### L7 proxying
 
-Requests match by exact hostname, then longest path prefix. The proxy speaks HTTP/2 and WebSockets, adds `X-Forwarded-*` headers, and picks an instance with **P2C** (power-of-two-choices) over live in-flight counters — preferring an instance on the same node when load is equal, so co-located traffic never crosses the network. Only instances that pass [health checks](../deploy/zattera-toml#deployhealthcheck) are candidates; a request entering node A for an app on node B rides the [encrypted mesh](mesh).
+Requests match by exact hostname, then longest path prefix. The proxy speaks HTTP/2 and WebSockets, adds `X-Forwarded-*` headers, and picks an instance with **P2C** (power-of-two-choices) over live in-flight counters — preferring an instance on the same node when load is equal, so co-located traffic never crosses the network. Only instances that pass [health checks](../deploy/zattera-toml#zatteratoml-reference-deployhealthcheck) are candidates; a request entering node A for an app on node B rides the [encrypted mesh](mesh).
 
 Per-route middleware is available (HTTPS redirect, compression, basic auth, IP allowlists, body size limits), including **sticky sessions** — an opaque `zt_sticky` cookie pins a client to an instance, re-validated each request and re-pinned automatically if the instance drains or fails.
 
 ### TLS everywhere
 
-HTTPS terminates in-process with certificates from the embedded ACME manager — issued on demand, stored in replicated cluster state so every node can serve every certificate. Details in [Custom domains](../deploy/custom-domains#tls-certificates). In dev mode the cluster CA signs certificates instead, no internet required.
+HTTPS terminates in-process with certificates from the embedded ACME manager — issued on demand, stored in replicated cluster state so every node can serve every certificate. Details in [Custom domains](../deploy/custom-domains#custom-domains-how-it-works-tls-certificates). In dev mode the cluster CA signs certificates instead, no internet required.
 
 ### Traffic switches atomically
 

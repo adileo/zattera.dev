@@ -53,4 +53,4 @@ You never clean the registry by hand. An hourly leader loop keeps, per environme
 
 ### Multi-arch
 
-The registry and builder already understand multi-platform images (OCI image indexes, QEMU emulation for cross-builds), but **arch-aware scheduling is not implemented yet** ([roadmap](../roadmap/tasks) T-87/T-88) — on mixed amd64/arm64 clusters, build and run on matching architectures for now.
+Mixed amd64/arm64 clusters work. The registry and builder handle multi-platform images (OCI image indexes, QEMU emulation for cross-builds), and the scheduler is arch-aware: it resolves the platforms a release actually ships and filters out nodes that can't run them, using the `zattera.dev/os-arch` label each node reports about itself. An image with no runnable node fails placement with a clear error instead of landing on hardware that can't execute it.

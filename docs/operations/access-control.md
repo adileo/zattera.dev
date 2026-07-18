@@ -105,6 +105,6 @@ Notes:
 - **A sweep that crashes mid-flight re-archives its batch** rather than risk losing it; the reader deduplicates by id, so duplicates never surface.
 - **`--archive` cannot be combined with `-f`** — following re-queries every two seconds, and the archive only holds settled history.
 
-Sensitive values get extra gates on top of RBAC: env var reveal requires developer+ *and* an unsealed cluster key (see [Environment variables](../deploy/environment-variables#how-it-works)).
+Sensitive values get extra gates on top of RBAC: env var reveal requires developer+ *and* an unsealed cluster key (see [Environment variables](../deploy/environment-variables#environment-variables-how-it-works)).
 
 SSO/OIDC is planned for M4.

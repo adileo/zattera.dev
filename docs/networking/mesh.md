@@ -45,7 +45,7 @@ Peer topology is phased (see [ADR-0003](../contributing/architecture-decision-re
 
 1. **Hub-and-spoke** — workers initially peer only with control nodes, which carry an `allowed_ips = 10.90.0.0/16` route and forward traffic between workers. NAT'd workers (no public endpoint) set a 25s persistent keepalive so the NAT hole stays open from their side; the hub never has to initiate.
 2. **Direct worker↔worker** — every node continuously pings the control nodes over a lightweight disco protocol (STUN-like, HMAC-authenticated). The control node observes each worker's public `ip:port` as seen from outside and folds it into the peer set. When **both** sides of a pair have an observed endpoint, they get direct `/32` peers — traffic stops hairpinning through the hub. The hub route always remains as fallback (WireGuard's most-specific AllowedIP wins).
-3. **UDP hole punching and TCP relay** (for the NAT pairs that can't connect directly) are on the [roadmap](../roadmap/tasks) (T-57, T-58) — until then, those pairs simply keep using the hub path.
+3. **UDP hole punching and TCP relay**, for the NAT pairs that can't connect directly. Both sides punch simultaneously against their observed endpoints; when punching fails (symmetric NAT on both ends), the pair falls back to a TCP relay hosted by the control nodes. This datapath is opt-in per node — set [`[mesh] mode = "meshsock"`](../setup/configuration#configuration-reference-mesh) on NAT'd nodes that need worker↔worker connectivity. Nodes left on the default `auto` keep using the hub path for pairs they can't reach directly.
 
 ### Peer distribution
 

@@ -106,10 +106,10 @@ If you declare nothing and the app has an HTTP port, you get the HTTP `/healthz`
 | `stop_grace` | `10s` | Graceful-stop window before kill |
 | `stateful` | `false` | Stateful service: node-pinned [volumes](../data/volumes), exactly-one, stop-then-start deploys |
 | `scale_to_zero` / `idle_timeout` | — | Cool an idle env to 0 replicas after the window — [Scale-to-zero](../scaling/scale-to-zero) |
-| `max_concurrency` | — | Serverless mode: scale on in-flight requests per replica — [Scale-to-zero](../scaling/scale-to-zero#serverless-concurrency-mode) |
+| `max_concurrency` | — | Serverless mode: scale on in-flight requests per replica — [Scale-to-zero](../scaling/scale-to-zero#scale-to-zero-serverless-serverless-concurrency-mode) |
 | `[env.<name>.resources]` | — | `cpu_millis`, `memory_mb` reservations (used for placement) |
 | `[env.<name>.autoscale]` | — | [Autoscaling](../scaling/autoscaling) targets: `target_cpu_percent`, `target_memory_percent`, `target_rps_per_replica` |
-| `[env.<name>.placement]` | — | Node label constraints (string map); set labels with [`zt nodes label`](../setup/nodes#labels-and-placement) |
+| `[env.<name>.placement]` | — | Node label constraints (string map); set labels with [`zt nodes label`](../setup/nodes#nodes-labels-and-placement) |
 
 #### `[[env.<name>.ports]]`
 
@@ -128,7 +128,7 @@ for a `stateful` service. See [Volumes](../data/volumes).
 
 ### `[[cron]]`
 
-Global cron entries, overridable per environment with `[[env.<name>.cron]]`: `name`, `schedule` (5-field cron), `command`, `concurrency` (`forbid` default / `replace` / `allow`), `max_retries`. The leader fires each due schedule as a one-shot job in the environment's active-release image; inspect with `zt cron ls`. See [Jobs & cron](../operations/jobs#cron).
+Global cron entries, overridable per environment with `[[env.<name>.cron]]`: `name`, `schedule` (5-field cron), `command`, `concurrency` (`forbid` default / `replace` / `allow`), `max_retries`. The leader fires each due schedule as a one-shot job in the environment's active-release image; inspect with `zt cron ls`. See [Jobs & cron](../operations/jobs#jobs-cron).
 
 ## How it's applied
 

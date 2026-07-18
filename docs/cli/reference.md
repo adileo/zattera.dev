@@ -109,7 +109,7 @@ Cluster-wide backups (admin). See [Backup & disaster recovery](../data/backup-re
 
 ## Alerts
 
-Alert rules and notification channels. See [Metrics & alerts](../operations/metrics-and-alerts#alerts).
+Alert rules and notification channels. See [Metrics & alerts](../operations/metrics-and-alerts#metrics-alerts-alerts).
 
 | Command | Description |
 | --- | --- |
