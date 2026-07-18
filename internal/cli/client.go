@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/status"
 
+	zatterav1 "github.com/zattera-dev/zattera/api/gen/zattera/v1"
 	"github.com/zattera-dev/zattera/internal/cli/cliconfig"
 	"github.com/zattera-dev/zattera/internal/cli/ui"
 	"github.com/zattera-dev/zattera/pkg/apiclient"
@@ -52,6 +54,21 @@ func projectName(ctx cliconfig.Context) (string, error) {
 		return ctx.DefaultProject, nil
 	}
 	return "", errors.New("no project selected: pass --project or set a default in your context")
+}
+
+// resolveProjectID turns a project name into its canonical id. Most RPCs are
+// project-scoped and let the server's RBAC interceptor do this rewrite, but
+// audit and event queries treat an empty project as "cluster-wide", so they are
+// not in that table and need the id resolved here (T-76).
+func resolveProjectID(ctx context.Context, client *apiclient.Client, name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
+	proj, err := client.Projects.GetProject(ctx, &zatterav1.GetProjectRequest{ProjectId: name})
+	if err != nil {
+		return "", apiError(err)
+	}
+	return proj.GetMeta().GetId(), nil
 }
 
 // apiError strips the "rpc error: code = ... desc = " noise so users see a

@@ -158,8 +158,13 @@ func roleRank(role zatterav1.Role) int {
 }
 
 // isOrgAdmin reports whether the identity is an org owner/admin.
-func (r *RBAC) isOrgAdmin(userID string) bool {
-	u, ok := r.store.User(userID)
+func (r *RBAC) isOrgAdmin(userID string) bool { return isOrgAdminUser(r.store, userID) }
+
+// isOrgAdminUser reports whether the user is an org owner or admin. Handlers
+// that scope their own results (ListProjects, ListEvents) share this with the
+// RBAC interceptor.
+func isOrgAdminUser(store *state.Store, userID string) bool {
+	u, ok := store.User(userID)
 	if !ok {
 		return false
 	}

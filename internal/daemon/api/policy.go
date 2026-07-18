@@ -60,6 +60,9 @@ var methodAuth = map[string]Requirement{
 
 	// --- AuditService ---
 	"/zattera.v1.AuditService/QueryAudit": reqAdmin,
+	// ListEvents is readable by any user; the handler scopes non-admins to
+	// projects they belong to (T-76).
+	"/zattera.v1.AuditService/ListEvents": reqUser,
 
 	// --- DomainService ---
 	"/zattera.v1.DomainService/AddDomain":     reqUser,

@@ -398,6 +398,39 @@
         ]
       }
     },
+    "/v1/events/query": {
+      "post": {
+        "summary": "ListEvents returns platform events (deploys, node health, certificate\nrenewals), newest first. Unlike QueryAudit this is not admin-only: a\nproject member may read their own project's events, so project_id is\nrequired unless the caller is an org owner/admin.",
+        "operationId": "AuditService_ListEvents",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListEventsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ListEventsRequest"
+            }
+          }
+        ],
+        "tags": [
+          "AuditService"
+        ]
+      }
+    },
     "/v1/join-tokens": {
       "post": {
         "operationId": "NodeService_CreateJoinToken",
@@ -3037,6 +3070,44 @@
       ],
       "default": "ENVIRONMENT_TYPE_UNSPECIFIED"
     },
+    "v1Event": {
+      "type": "object",
+      "properties": {
+        "meta": {
+          "$ref": "#/definitions/v1Meta"
+        },
+        "kind": {
+          "type": "string",
+          "title": "e.g. \"deploy.succeeded\", \"node.down\", \"cert.renew_failed\""
+        },
+        "severity": {
+          "type": "string",
+          "title": "\"info\" | \"warning\" | \"error\""
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "appId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "nodeId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Event is a platform event (deploy finished, node down, cert renewed, ...).\nEvents feed the alert engine and `zattera events`."
+    },
     "v1ExecOutput": {
       "type": "object",
       "properties": {
@@ -3400,6 +3471,47 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/v1Domain"
+          }
+        }
+      }
+    },
+    "v1ListEventsRequest": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "title": "\"\" = cluster-wide (org owner/admin only)"
+        },
+        "appId": {
+          "type": "string"
+        },
+        "kindPrefix": {
+          "type": "string",
+          "title": "e.g. \"deploy.\" or \"node.down\""
+        },
+        "severity": {
+          "type": "string",
+          "title": "\"info\" | \"warning\" | \"error\""
+        },
+        "sinceUnixMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "limit": {
+          "type": "integer",
+          "format": "int64",
+          "title": "default 100"
+        }
+      }
+    },
+    "v1ListEventsResponse": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Event"
           }
         }
       }

@@ -23,11 +23,11 @@ import (
 	"github.com/zattera-dev/zattera/internal/pkgutil/ids"
 )
 
-// testServer runs a real API server in-process and returns its address, CA PEM
-// and a bootstrap admin token.
-func testServer(t *testing.T) (addr string, caPEM []byte, adminToken string) {
+// testServer runs a real API server in-process and returns its address, CA PEM,
+// a bootstrap admin token, and the raft store so tests can seed state directly.
+func testServer(t *testing.T) (addr string, caPEM []byte, adminToken string, rs *raftstore.Store) {
 	t.Helper()
-	rs := raftstore.NewTestStore(t)
+	rs = raftstore.NewTestStore(t)
 	st := rs.State()
 	clk := clock.Real{}
 	auth := api.NewAuthenticator(st, rs, clk)
@@ -47,6 +47,7 @@ func testServer(t *testing.T) (addr string, caPEM []byte, adminToken string) {
 		AuthService:    api.NewAuthServer(st, rs, clk, ""),
 		ProjectService: api.NewProjectServer(st, rs, clk, rbac),
 		AppService:     api.NewAppServer(st, rs, clk, sealer),
+		AuditService:   api.NewAuditor(st, rs, nil, 0),
 		UnaryInterceptors: []grpc.UnaryServerInterceptor{
 			auth.UnaryInterceptor, rbac.UnaryInterceptor,
 		},
@@ -73,7 +74,7 @@ func testServer(t *testing.T) (addr string, caPEM []byte, adminToken string) {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	return srv.Addr().String(), authority.CABundlePEM(), tok
+	return srv.Addr().String(), authority.CABundlePEM(), tok, rs
 }
 
 func meta() *zatterav1.Meta { return metaID(ids.New()) }
@@ -98,7 +99,7 @@ func run(t *testing.T, args ...string) (string, string, error) {
 }
 
 func TestCLI(t *testing.T) {
-	addr, caPEM, token := testServer(t)
+	addr, caPEM, token, _ := testServer(t)
 
 	// Isolate the CLI config in a temp dir.
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")

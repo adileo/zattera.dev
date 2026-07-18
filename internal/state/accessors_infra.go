@@ -698,6 +698,25 @@ func (s *Store) ListEvents(limit int) []*zatterav1.Event {
 	return cloneAll(s.events[n-limit:])
 }
 
+// QueryEvents returns the newest events matching the filter, newest first —
+// the same ordering contract as QueryAudit, so the two read consistently.
+// (ListEvents keeps its append-order tail for the alert engine, which replays
+// events chronologically.)
+func (s *Store) QueryEvents(filter func(*zatterav1.Event) bool, limit int) []*zatterav1.Event {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []*zatterav1.Event
+	for i := len(s.events) - 1; i >= 0 && len(out) < limit; i-- {
+		if filter == nil || filter(s.events[i]) {
+			out = append(out, clone(s.events[i]))
+		}
+	}
+	return out
+}
+
 func (s *Store) AppendAudit(entries []*zatterav1.AuditEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

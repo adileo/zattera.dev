@@ -42,7 +42,35 @@ Org-level owners/admins bypass project membership. Non-members don't see a proje
 
 Identity is resolved per request: nodes authenticate with **mTLS certificates** (their identity is in the cert, issued at join), humans with **bearer tokens** (stored hashed; expiry enforced at lookup). Authorization is a fail-closed method table — any API method without an explicit policy is **denied**, so new endpoints can't accidentally ship open. Project-scoped requests then check your project role against the method's minimum.
 
-Every mutating API call is recorded in the **audit log** — actor, method, project, and outcome (including failures) — batched into replicated state so the trail survives node loss. Passwords and secret values are never included. Querying the audit log from the CLI is on the [roadmap](../roadmap/tasks) (T-76); it's available via the API today.
+Every mutating API call is recorded in the **audit log** — actor, method, project, and outcome (including failures) — batched into replicated state so the trail survives node loss. Passwords and secret values are never included.
+
+## Querying the audit log
+
+```bash
+zt audit                                  # whole cluster, newest first (org admin)
+zt audit --project demo --since 24h       # one project, last day
+zt audit --method /zattera.v1.DeployService/   # only deploys and rollbacks
+zt audit --actor usr_01H... --json        # one user, machine-readable
+```
+
+Reading the cluster-wide log requires an **org owner/admin** token. `--method` matches a prefix of the full gRPC method name, so `/zattera.v1.AppService/` narrows to one service and `/zattera.v1.AppService/SetEnvVars` to one call.
+
+The audit log is a **capped ring** in replicated state, not an archive — old entries age out. Export what you need to keep with `--json` on a schedule.
+
+## Events
+
+Events are the platform's own narration — deploys, node health, certificate renewals — and are what the [alert engine](metrics-and-alerts) evaluates.
+
+```bash
+zt events                                 # newest first
+zt events -f                              # follow, oldest first as they arrive
+zt events --project demo --kind deploy.   # only deployment events
+zt events --severity error --since 1h
+```
+
+Unlike the audit log, events are **not** admin-only: any project member can read their own project's events. Cluster-wide (`zt events` with no `--project`) still requires an org owner/admin. `--kind` matches a prefix, so `deploy.` covers `deploy.succeeded` and `deploy.failed`.
+
+Follow mode polls every two seconds — there is no server-side event stream — and prints each event exactly once.
 
 Sensitive values get extra gates on top of RBAC: env var reveal requires developer+ *and* an unsealed cluster key (see [Environment variables](../deploy/environment-variables#how-it-works)).
 

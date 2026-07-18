@@ -876,6 +876,16 @@ service AuditService {
       body: "*"
     };
   }
+  // ListEvents returns platform events (deploys, node health, certificate
+  // renewals), newest first. Unlike QueryAudit this is not admin-only: a
+  // project member may read their own project's events, so project_id is
+  // required unless the caller is an org owner/admin.
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse) {
+    option (google.api.http) = {
+      post: "/v1/events/query"
+      body: "*"
+    };
+  }
 }
 
 message QueryAuditRequest {
@@ -889,6 +899,19 @@ message QueryAuditRequest {
 
 message QueryAuditResponse {
   repeated AuditEntry entries = 1;
+}
+
+message ListEventsRequest {
+  string project_id = 1;  // "" = cluster-wide (org owner/admin only)
+  string app_id = 2;
+  string kind_prefix = 3; // e.g. "deploy." or "node.down"
+  string severity = 4;    // "info" | "warning" | "error"
+  int64 since_unix_ms = 5;
+  uint32 limit = 6; // default 100
+}
+
+message ListEventsResponse {
+  repeated Event events = 1;
 }
 
 service BackupService {

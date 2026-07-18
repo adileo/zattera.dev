@@ -3384,6 +3384,7 @@ var AlertService_ServiceDesc = grpc.ServiceDesc{
 
 const (
 	AuditService_QueryAudit_FullMethodName = "/zattera.v1.AuditService/QueryAudit"
+	AuditService_ListEvents_FullMethodName = "/zattera.v1.AuditService/ListEvents"
 )
 
 // AuditServiceClient is the client API for AuditService service.
@@ -3391,6 +3392,11 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AuditServiceClient interface {
 	QueryAudit(ctx context.Context, in *QueryAuditRequest, opts ...grpc.CallOption) (*QueryAuditResponse, error)
+	// ListEvents returns platform events (deploys, node health, certificate
+	// renewals), newest first. Unlike QueryAudit this is not admin-only: a
+	// project member may read their own project's events, so project_id is
+	// required unless the caller is an org owner/admin.
+	ListEvents(ctx context.Context, in *ListEventsRequest, opts ...grpc.CallOption) (*ListEventsResponse, error)
 }
 
 type auditServiceClient struct {
@@ -3411,11 +3417,26 @@ func (c *auditServiceClient) QueryAudit(ctx context.Context, in *QueryAuditReque
 	return out, nil
 }
 
+func (c *auditServiceClient) ListEvents(ctx context.Context, in *ListEventsRequest, opts ...grpc.CallOption) (*ListEventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListEventsResponse)
+	err := c.cc.Invoke(ctx, AuditService_ListEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuditServiceServer is the server API for AuditService service.
 // All implementations must embed UnimplementedAuditServiceServer
 // for forward compatibility.
 type AuditServiceServer interface {
 	QueryAudit(context.Context, *QueryAuditRequest) (*QueryAuditResponse, error)
+	// ListEvents returns platform events (deploys, node health, certificate
+	// renewals), newest first. Unlike QueryAudit this is not admin-only: a
+	// project member may read their own project's events, so project_id is
+	// required unless the caller is an org owner/admin.
+	ListEvents(context.Context, *ListEventsRequest) (*ListEventsResponse, error)
 	mustEmbedUnimplementedAuditServiceServer()
 }
 
@@ -3428,6 +3449,9 @@ type UnimplementedAuditServiceServer struct{}
 
 func (UnimplementedAuditServiceServer) QueryAudit(context.Context, *QueryAuditRequest) (*QueryAuditResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method QueryAudit not implemented")
+}
+func (UnimplementedAuditServiceServer) ListEvents(context.Context, *ListEventsRequest) (*ListEventsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListEvents not implemented")
 }
 func (UnimplementedAuditServiceServer) mustEmbedUnimplementedAuditServiceServer() {}
 func (UnimplementedAuditServiceServer) testEmbeddedByValue()                      {}
@@ -3468,6 +3492,24 @@ func _AuditService_QueryAudit_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuditService_ListEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuditServiceServer).ListEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuditService_ListEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuditServiceServer).ListEvents(ctx, req.(*ListEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuditService_ServiceDesc is the grpc.ServiceDesc for AuditService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3478,6 +3520,10 @@ var AuditService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryAudit",
 			Handler:    _AuditService_QueryAudit_Handler,
+		},
+		{
+			MethodName: "ListEvents",
+			Handler:    _AuditService_ListEvents_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

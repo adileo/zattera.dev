@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -178,6 +179,50 @@ func (a *Auditor) QueryAudit(_ context.Context, req *zatterav1.QueryAuditRequest
 		return true
 	}
 	return &zatterav1.QueryAuditResponse{Entries: a.store.QueryAudit(filter, limit)}, nil
+}
+
+// ListEvents implements zatterav1.AuditServiceServer over state.QueryEvents.
+//
+// Unlike QueryAudit this is open to any authenticated user, so it scopes the
+// result itself: org owners/admins see everything, everyone else must name a
+// project they belong to. The tier table cannot express that, and the RBAC
+// interceptor's project rewrite is not usable here because "" legitimately
+// means cluster-wide for an admin (T-76).
+func (a *Auditor) ListEvents(ctx context.Context, req *zatterav1.ListEventsRequest) (*zatterav1.ListEventsResponse, error) {
+	id, ok := IdentityFrom(ctx)
+	if !ok || id.UserID == "" {
+		return nil, status.Error(codes.Unauthenticated, "a user identity is required")
+	}
+	projectID := req.GetProjectId()
+	if !isOrgAdminUser(a.store, id.UserID) {
+		if projectID == "" {
+			return nil, status.Error(codes.InvalidArgument, "project is required")
+		}
+		if _, member := a.store.ProjectMember(projectID, id.UserID); !member {
+			// Non-members must not learn the project exists.
+			return nil, status.Error(codes.NotFound, "project not found")
+		}
+	}
+
+	filter := func(e *zatterav1.Event) bool {
+		if projectID != "" && e.GetProjectId() != projectID {
+			return false
+		}
+		if app := req.GetAppId(); app != "" && e.GetAppId() != app {
+			return false
+		}
+		if kp := req.GetKindPrefix(); kp != "" && !strings.HasPrefix(e.GetKind(), kp) {
+			return false
+		}
+		if sev := req.GetSeverity(); sev != "" && e.GetSeverity() != sev {
+			return false
+		}
+		if s := req.GetSinceUnixMs(); s > 0 && e.GetMeta().GetCreatedAt().AsTime().UnixMilli() < s {
+			return false
+		}
+		return true
+	}
+	return &zatterav1.ListEventsResponse{Events: a.store.QueryEvents(filter, int(req.GetLimit()))}, nil
 }
 
 // --- helpers ---

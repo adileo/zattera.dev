@@ -24,7 +24,9 @@ something runnable.
 > addressed snapshot engine), **T-65** (snapshot orchestration + CLI) and
 > **T-66** (full backup + `zatterad restore` DR) are done. In Phase 7, **T-75**
 > (per-PR preview environments: `pull_request` webhooks → `preview-<n>` envs
-> cloned from staging, PR-comment URLs, per-app cap, TTL janitor) is done.
+> cloned from staging, PR-comment URLs, per-app cap, TTL janitor) and **T-76**
+> (`zattera audit` + `zattera events -f`, backed by a new `ListEvents` RPC) are
+> done.
 
 ## What already exists (do not rebuild)
 
@@ -2758,12 +2760,35 @@ disabled. `githubpreviews_test.go` — adapter over a real raft store: spec+var
 cloning, base-env preference order, head-SHA resolution, TTL touch, delete.
 **Acceptance:** `go test ./internal/daemon/github/ -run TestPreviews` ✅
 
-### T-76 — Audit query CLI + events surfacing
+### T-76 — Audit query CLI + events surfacing  ✅ **DONE**
 Phase 7 · Depends: T-07 · Size: S
-**Files:** `internal/cli/audit.go`, `internal/cli/events.go`
-**Steps:** `zattera audit [--project] [--since] [--method]` (table+json);
-`zattera events [-f]` (poll ListEvents; follow = poll loop 2s).
-**Acceptance:** `go test ./internal/cli/ -run TestAudit`
+**Files:** `internal/cli/audit.go`, `internal/cli/events.go`,
+`internal/daemon/api/audit.go`, `api/proto/zattera/v1/api.proto`
+**Done:**
+1. `zattera audit [--project] [--since] [--method] [--actor] [--limit]`,
+   table + `--json`, newest first.
+2. `zattera events [-f] [--project] [--kind] [--severity] [--since] [--limit]`;
+   follow is a 2s poll loop printing oldest-first, each event exactly once
+   (inclusive ms cursor + id dedupe, since ids can share a millisecond).
+3. **Deviation from the plan:** the Steps assumed a `ListEvents` RPC existed —
+   it did not (only the `Event` message and a store accessor). Added
+   `AuditService.ListEvents` + `state.QueryEvents` (newest-first, matching
+   `QueryAudit`; the old `ListEvents(limit)` keeps its append-order tail for
+   the alert engine, which replays chronologically).
+4. `ListEvents` is `reqUser`, not admin-only: the handler scopes non-admins to
+   projects they belong to (org owner/admin → cluster-wide). The tier table
+   cannot express that, and the RBAC project rewrite is unusable here because
+   `project_id=""` legitimately means cluster-wide.
+5. `resolveProjectID` in the CLI: audit/event queries are absent from the RBAC
+   project table, so the project NAME is resolved to its id client-side —
+   without it `--project demo` silently matched nothing.
+**Tests:** `internal/cli/audit_test.go` (all named `TestAudit*` so the
+acceptance command covers events too) — table/json, method/since/kind/severity
+filters, empty result, project scoping incl. cross-project isolation, and a
+follow run asserting once-only delivery, ordering and clean cancel.
+`internal/daemon/api/events_test.go` — scoping contract (admin / member /
+non-member / anonymous) and filters.
+**Acceptance:** `go test ./internal/cli/ -run TestAudit` ✅
 
 ### T-77 — `volume browse` TUI (read-only)
 Phase 7 · Depends: T-65 · Size: M
