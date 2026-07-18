@@ -3443,6 +3443,138 @@ state must stay bounded); what was missing is a durable copy outside it.
    each time. Both are fine at the object counts an hourly-ish sweep produces;
    revisit if a cluster archives for years.
 
+### T-93 — Trustworthy per-node version reporting
+Phase 9 · Depends: T-14 · Size: S
+**Problem:** `Node.binary_version` exists but is not reliable, so there is no
+answer to "what version is each node on" — the prerequisite for any upgrade
+orchestration. Three gaps: `registerLocalNode` (`daemon.go`) builds the whole
+Node record at boot **without** `BinaryVersion`, so the bootstrap control node
+never has one and a rejoining node overwrites its own with empty;
+`AgentHello.binary_version` is received in `agentsync.go` and only **logged**,
+never folded into state; and `zt nodes ls` has no version column.
+**Files:** `internal/daemon/daemon.go`, `internal/daemon/api/agentsync.go`,
+`internal/cli/nodes.go`
+**Steps:**
+1. Set `BinaryVersion: version.Version` in `registerLocalNode`.
+2. On `AgentHello`, if the reported version differs from the stored Node
+   record, apply a `PutNode` with it — this is what makes the value refresh
+   after an upgrade without a rejoin.
+3. `zt nodes ls`: add a VERSION column; mark rows that differ from the majority
+   so skew is visible at a glance.
+4. Helper `state.ClusterMinVersion()` (and max) for the upgrade planner and for
+   `zt doctor` (T-78).
+**Gotchas:** the AgentHello write must be conditional, not every reconnect — an
+unconditional PutNode per stream open is a raft write amplifier. Version strings
+are `git describe` output (`v0.3.1-4-gabc` / `dev`); compare with a real semver
+parse and treat unparseable as "unknown", never as "older".
+**Tests:** unit — hello with a changed version writes once and only once;
+unchanged version writes nothing; min-version across mixed/unknown values.
+**Acceptance:** `go test ./internal/daemon/api/ -run TestNodeVersion`
+
+### T-94 — Uncordon (return a drained node to service)
+Phase 9 · Depends: T-19 · Size: S
+**Problem:** `DrainNode` flips a node to DRAINING/DRAINED and nothing can flip it
+back. Liveness deliberately skips those states (`liveness.go`), so today a
+drained node only returns to service by **restarting its daemon**, which
+re-applies `PutNode` with ALIVE+schedulable. That is an accidental mechanism, and
+an upgrade loop that cordons each node needs an explicit way out.
+**Files:** `api/proto/zattera/v1/api.proto`, `internal/daemon/api/nodes.go`,
+`internal/cli/nodes.go`, `internal/daemon/api/policy.go`
+**Steps:**
+1. `UncordonNode` RPC (admin): DRAINING/DRAINED → ALIVE, `schedulable=true`.
+   Refuse on a DOWN node — liveness owns that transition.
+2. `CordonNode`: `schedulable=false` **without** draining. This is the primitive
+   T-95 actually needs (see its Gotchas): it stops new placements while leaving
+   running containers alone.
+3. CLI `zt nodes cordon|uncordon <name>`; show a cordoned-but-alive node
+   distinctly in `nodes ls` (it is ALIVE with schedulable=false).
+**Gotchas:** the scheduler's placement filter is `ALIVE && Schedulable`
+(`placement.go`), so cordon works with no scheduler change — verify that a
+cordoned node keeps its existing assignments and only stops receiving new ones.
+**Tests:** unit — cordon leaves assignments untouched and blocks new placement;
+uncordon from DRAINED restores placement; uncordon on DOWN is refused.
+**Acceptance:** `go test ./internal/daemon/api/ -run TestCordon`
+
+### T-95 — `zattera cluster upgrade` (rolling, minimal-downtime)
+Phase 9 · Depends: T-93, T-94, T-54 · Size: L
+**Goal:** one command brings every node to the same version, in a safe order,
+without taking workloads down: `zt cluster upgrade [--version vX.Y.Z]`.
+
+**The key fact this design rests on:** the agent's executor returns on
+`ctx.Done()` and **never stops containers** (`agent/executor.go`) — workloads are
+docker-managed and survive a `zatterad` restart. So a binary upgrade does **not**
+need to drain a node, and must not: `reconcileDrains` hard-stops stateful
+workloads (node-pinned volumes can't move), which would turn a zero-downtime
+binary swap into a database outage on every stateful node. Cordon, restart,
+uncordon — never drain.
+
+**What actually blinks** during a node's restart is that node's in-process
+ingress proxy and its agent stream, i.e. seconds, and only for traffic landing
+on that node. Zero ingress downtime therefore requires ≥2 ingress nodes; with
+one, the command must say so up front rather than pretend.
+
+**Files:** `internal/cli/clusterupgrade.go`, `internal/daemon/api/upgrade.go`,
+`internal/daemon/agent/selfupgrade.go`,
+`api/proto/zattera/cluster/v1/agent.proto`, `api/proto/zattera/v1/api.proto`
+**Steps:**
+1. **Plan/preflight** (`UpgradePlan` RPC, admin): resolve the target version
+   (default: latest release), confirm an asset exists for every distinct
+   `Node.os_arch`, list each node's current version (T-93), and refuse to start
+   if any node is DOWN or the cluster has no quorum margin (a 3-node control
+   plane can lose exactly one node at a time). `--dry-run` prints the plan and
+   the expected ingress impact, and exits.
+2. **Order: workers → control followers → leader last**, one node at a time.
+   The FSM is additive-only and `raftstore/apply.go` surfaces an unknown
+   mutation as an error *without halting the node* — so a new leader proposing a
+   new mutation type silently diverges old followers' state. An old leader only
+   ever proposes mutations that newer followers understand, so upgrading the
+   leader last is the safe direction. Transfer leadership explicitly before
+   upgrading it (raft `LeadershipTransfer`) instead of forcing an election.
+3. **Per node:** cordon (T-94) → send an upgrade instruction → wait for the node
+   to come back reporting the new version (T-93) → health gate → uncordon →
+   next. Any failure aborts the run, leaves the remaining nodes untouched, and
+   reports exactly which node is stuck and how to recover.
+4. **Agent self-upgrade** (new `ControlMessage` arm — the oneof is ready for an
+   additive field 3): the control plane sends `{url, sha256, version}`; the agent
+   downloads, **verifies the checksum before touching anything**, writes
+   `zattera.new`, keeps the running binary as `zattera.prev`, atomically
+   renames, and re-execs (or `systemctl restart` when running under the unit —
+   `nodecmd.go` already owns that unit). Report progress/result on a new
+   `AgentMessage` arm.
+5. **Rollback:** `--rollback` restores `zattera.prev` node-by-node in reverse
+   order. `install/install.sh` currently does an atomic `mv` with no backup —
+   add the `.prev` retention there too so a manually-installed node can also
+   roll back.
+6. Docs: the `upgrades.md` page the spec already anticipates.
+
+**Gotchas:**
+- **This is a remote-code-execution primitive by design.** Admin-only, the
+  checksum must be verified before execution and must come from the control
+  plane rather than from the download host, and the agent must refuse any base
+  URL outside a configured allowlist (default: the official release host). Say
+  this plainly in the docs rather than hiding it.
+- Do **not** reuse drain (see above). Cordon is the primitive.
+- Air-gapped clusters: `--from-file` / a control-plane-served artifact, so the
+  nodes never need egress. Can be a follow-up, but design the instruction so the
+  URL is not assumed public.
+- A node that never comes back must not hang the run forever — bounded wait,
+  then abort with the node left cordoned (visible, not silently degraded).
+- The upgrading node is often the one running the CLI's own API connection.
+  Upgrading the leader tears down the client stream; the CLI must reconnect
+  through the control-endpoint rotation (T-55c) rather than reporting failure.
+- Version skew is expected *during* the run; `zt doctor`/CLI skew warnings must
+  not fire spuriously while an upgrade is in progress (record an in-progress
+  marker in the KV).
+**Tests:** unit — plan ordering (workers/followers/leader-last) over a fake
+cluster incl. a single-node cluster; abort-on-failure leaves later nodes
+untouched; checksum mismatch refuses to swap and reports; rollback ordering.
+Integration — simcluster upgrade with a fake artifact server, asserting
+containers keep running across the restart and assignments reconcile.
+Cloud (`test/cloud/upgrade_test.go`) — real 3-node upgrade, asserting an app
+stays reachable throughout and every node reports the new version.
+**Acceptance:** `go test ./internal/cli/ -run TestClusterUpgrade` and
+`go test -tags cloud ./test/cloud/ -run TestClusterUpgrade`
+
 # Dependency quick-reference
 
 ```
@@ -3458,5 +3590,5 @@ P6: T-55(17,08)→T-56 · T-57(20)→T-58 · T-59(13)→T-60(41)/T-61(23) ·
 P7: T-69(61,42)→T-70→T-71 · T-72(45)→T-73 · T-74(59,07) · T-75(37,45) ·
     T-76 · T-77(65) · T-78 · T-79(54) · T-80(all)
 P8: T-81(12)→T-82→T-83 · T-84(83,17,29)→T-85(84) · T-86(84,85)
-P9: T-91(53,40) · T-92(66,76)
+P9: T-91(53,40) · T-92(66,76) · T-93(14) · T-94(19) · T-95(93,94,54)
 ```
