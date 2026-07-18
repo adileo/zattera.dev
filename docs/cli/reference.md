@@ -62,6 +62,10 @@ Defaults to `--env staging`; `--prod` = `--env production`. See [Deploying](../d
 | `zt ps [--app NAME]` | Running instances: app, env, release, node, state, restarts |
 | `zt logs [app] [--env NAME] [--since 10m] [-f]` | Stream logs across instances, color-coded per instance |
 | `zt stats [--nodes \| --app NAME \| --node ID] [--since 1h] [--step 5m]` | Stats: current values from heartbeats, or history from the TSDB with `--since` (rendered as sparklines) |
+| `zt events [--kind PREFIX] [--severity info\|warning\|error] [--since 1h] [--limit N] [-f] [--archive]` | Platform events (deploys, node health, certificates), newest first; `-f` polls for new ones |
+| `zt audit [--actor ID] [--method PREFIX] [--since 1h] [--limit N] [--archive]` | Audit log of mutating API calls: actor, method, outcome, source address |
+
+Both default to the context's project; omitting `--project` queries the whole cluster and requires an org owner/admin token. Each is a capped ring in cluster state, so old entries age out — `--archive` also reads what was swept to object storage (requires archiving on the [backup destination](../data/backup-restore)).
 
 ## Remote debugging
 
@@ -91,6 +95,7 @@ Node-pinned persistent volumes for stateful services. See [Volumes](../data/volu
 | Command | Description |
 | --- | --- |
 | `zt volume ls` | List the project's volumes: id, name, env, node, status |
+| `zt volume browse <volume>` | Interactive read-only file browser (↑/↓ navigate, enter descends, `d` downloads, `q` quits) |
 | `zt volume create <name> [--app NAME] [--env NAME] [--node ID]` | Create a volume (pins to `--node` or the least-used healthy node) |
 | `zt volume rm <id>` | Delete a volume (refused while its service is running) |
 | `zt volume snapshot <id>` | Take an on-demand snapshot |
@@ -106,6 +111,7 @@ Cluster-wide backups (admin). See [Backup & disaster recovery](../data/backup-re
 | `zt backup config --bucket NAME [--endpoint URL] [--region R] [--prefix P] [--access-key K] [--secret-key S]` | Set the S3 destination (credentials sealed server-side) |
 | `zt backup run` | Run a full backup now (state + CA + volume snapshot refs) |
 | `zt backup ls` | List past backups and the current destination |
+| `zattera restore --from s3://BUCKET/PREFIX --passphrase-file FILE --data-dir DIR [--node-id ID] [--s3-endpoint URL] [--s3-region R] [--s3-access-key K] [--s3-secret-key S]` | Rebuild a fresh single-node cluster from the latest backup. Runs **on a server**, into an empty data dir; then start the node normally and let workers rejoin |
 
 ## Alerts
 
@@ -168,3 +174,9 @@ These run on the servers themselves (Linux binary):
 | `zattera cluster join <control-addr> --token TOKEN` | Configure + start a joining node |
 | `zattera cluster teardown [--keep-data]` | Stop and clean up a node |
 | `zattera server [--config PATH] [--dev] [--join ADDR --token TOKEN]` | Run the node daemon in the foreground (see [Configuration](../setup/configuration)) |
+
+`cluster upgrade` is the exception — it drives the rollout through the API, so it runs from your workstation like any other command:
+
+| Command | Description |
+| ------- | ----------- |
+| `zt cluster upgrade [--version vX.Y.Z] [--dry-run] [--yes]` | Roll every node to one version, one at a time, raft leader last. `--dry-run` prints the plan; `--yes` applies it. See [Upgrades](../operations/upgrades) |

@@ -41,8 +41,8 @@ func newVolumeBrowseCmd() *cobra.Command {
 		Long: "Interactive read-only file browser for a volume.\n\n" +
 			"Navigate with ↑/↓, enter to descend, backspace to go up, d to download the\n" +
 			"selected file to the current directory, q to quit.\n\n" +
-			"Read-only by design: there are no delete or upload keys. Use 'zt volume cp'\n" +
-			"to write into a volume.",
+			"Read-only by design: there are no delete or upload keys. To write into a\n" +
+			"volume, run a command in the service that mounts it ('zt attach').",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, cctx, err := clientFromContext()

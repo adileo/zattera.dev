@@ -15,6 +15,15 @@ zt deploy --prod
 
 See the [command reference](reference) for every command and flag.
 
+## Two kinds of commands
+
+The same binary carries both, which is why one download works everywhere — but they're used from different places:
+
+- **Client commands** (everything above, and most of the reference) talk to a cluster over the API. They run from your laptop and need a login.
+- **Host commands** — `cluster init`, `cluster join`, `cluster teardown`, `server`, and `restore` — configure the machine they run on. They need root on a Linux server, not a login, and they're the only ones the macOS/Windows builds omit.
+
+`cluster upgrade` looks like the second kind but is the first: it drives the rollout through the API, so it runs from your workstation.
+
 ## Logging in
 
 ```bash
@@ -43,6 +52,17 @@ zt context use prod      # switch
 - **`--project`** — most commands are project-scoped. Precedence: `--project` flag → the context's default project → error asking you to pick one.
 - **`--app`** — defaults to the `name` in `./zattera.toml` when you're inside an app directory, so `zt deploy`, `zt logs -f`, `zt ps` work with no arguments.
 - **`--env` / `--prod`** — deploy-family commands default to `staging`; `--prod` is shorthand for `--env production`. (Exception: `zt env …` and `zt jobs run` default to `production`.)
-- **`--json`** — every command supports machine-readable output for scripting.
+- **`--json`** — every command supports machine-readable output for scripting. In JSON mode the decorated `✓`/`●` lines are suppressed and stdout carries exactly one JSON document; progress and informational lines go to stderr, so `zt … --json | jq` is always safe.
 - **Exit codes** — non-zero on failure; `attach`, `fs`, and `jobs run` propagate the *remote* command's exit code, so they compose in shell scripts.
 - **Errors** — shown as plain messages (`project demo not found`), no gRPC noise.
+
+## Auditing what happened
+
+Two cluster-wide logs, both queryable from the CLI and both project-scoped unless you're an org admin:
+
+```bash
+zt events --since 1h              # deploys, node health, certificates
+zt audit --method Deploy          # who called what, with the outcome
+```
+
+Both are capped rings in cluster state, so old entries age out; `--archive` also reads what was swept to object storage.
