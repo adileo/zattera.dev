@@ -187,6 +187,7 @@ func (d *Docker) InspectContainer(ctx context.Context, id string) (ContainerStat
 	}
 	if c.State != nil {
 		st.Running = c.State.Running
+		st.Restarting = c.State.Restarting
 		st.ExitCode = c.State.ExitCode
 		st.OOMKilled = c.State.OOMKilled
 		st.StartedAt = parseTime(c.State.StartedAt)

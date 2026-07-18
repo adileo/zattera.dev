@@ -46,7 +46,7 @@ A deploy never touches the running version ("blue") until the new one ("green") 
 
 1. **Placing** — green instances are scheduled *alongside* blue. Placement filters nodes by liveness, architecture, labels, and capacity, then spreads replicas across nodes and regions. Red/green needs room for both versions at once: if the cluster is short on capacity, the deploy places what it can and **waits**, retrying each tick until room appears — blue keeps serving throughout.
 2. **Starting** — agents on the chosen nodes pull the image and start containers.
-3. **Health checking** — every green instance must pass its health check (HTTP/TCP/exec, with the grace period from your spec). Any failure aborts the deploy: green is torn down, **blue keeps serving, traffic never moved**.
+3. **Health checking** — every green instance must pass its health check (HTTP/TCP/exec, with the grace period from your spec). Any failure aborts the deploy: green is torn down, **blue keeps serving, traffic never moved**. A green that crash-loops (starts, dies, restarts) is detected and fails the deploy within seconds — it doesn't burn the whole health deadline.
 4. **Promoting** — one atomic state change flips the routing generation. All ingress proxies switch traffic to green together.
 5. **Draining** — blue stays warm for **~10 minutes**, then stops.
 

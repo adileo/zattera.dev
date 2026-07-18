@@ -102,9 +102,14 @@ type ContainerSpec struct {
 
 // ContainerState is a normalized inspect result.
 type ContainerState struct {
-	ID         string
-	Name       string
-	Running    bool
+	ID      string
+	Name    string
+	Running bool
+	// Restarting is Docker's crash-loop backoff state. CAUTION: Docker keeps
+	// State.Running=true while Restarting, and NetworkSettings.Ports is empty —
+	// callers treating Running as "up" will wait on a container that is dying
+	// in a loop (T-98).
+	Restarting bool
 	ExitCode   int
 	OOMKilled  bool
 	StartedAt  time.Time

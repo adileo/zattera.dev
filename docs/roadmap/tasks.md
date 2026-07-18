@@ -3560,6 +3560,38 @@ re-resolve outside it.
 **Acceptance:** `go test ./internal/daemon/agent/ -run TestHealth`, plus a
 stateful image bump on a macOS `--dev` node reaching `deploy.maintenance_end`.
 
+**DONE — with a corrected diagnosis.** The task's premise ("resolves once,
+never re-inspects") was wrong: `Ensure` never registers a monitor on a failed
+resolve, so every reconcile tick already retried it. Instrumenting the repro
+showed the green container was **crash-looping** — the "second deploy" test
+image (`redis:7.2-alpine`) cannot read the RDB written by `redis:7-alpine`
+(which is 7.4), so the container died in Docker's restart backoff. The real
+bug: Docker keeps `State.Running=true` while `Restarting`, with no ports
+published, so `pollLiveness` reported the instance RUNNING — the deployment
+advanced to HEALTHCHECKING and hung until the deadline, and the health prober
+warned every tick against a container that publishes nothing.
+Fixes:
+- `ContainerState.Restarting` mapped from Docker inspect; `pollLiveness`
+  checks it BEFORE `Running` and reports FAILED with "crash-looping: last
+  exit code N" — a crash-looping green now fails the deploy in seconds
+  (measured 6s vs the 3-minute deadline) and the stateful path restarts the
+  previous instance immediately.
+- The unresolvable-target warn logs once per episode (tracked per assignment,
+  cleared on resolve/remove) instead of 150+ identical lines per deploy.
+- `Executor.fail` now logs every attempt: the observed message is reaped with
+  the assignment, so the node log is where a failed deploy's real reason
+  survives. (This logging is how the crash loop — and a stale-network overlap
+  masking it — was found at all.)
+**Not done:** dev-mode probes were healthy in all observed cases once the
+container actually ran; no change to probe timing.
+**Tests:** `TestPollLivenessCrashLoop` (Restarting→FAILED with exit code,
+recovery→RUNNING again); `TestEnsureUnresolvableTargetRetriesAndWarnsOnce`
+(no monitor while unresolvable, one warn per episode, resolves after recovery,
+new episode warns again); fakeruntime gained `SetRestarting` mimicking
+Docker's Running=true/no-ports backoff state. Verified live on macOS `--dev`:
+crash-looping bump fails in ~6s with `deploy.rolled_back` and the old
+instance back healthy; a good bump still promotes.
+
 ---
 
 # Backlog (M4/M5 — do not implement now)

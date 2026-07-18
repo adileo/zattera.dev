@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -221,4 +223,65 @@ func waitState(t *testing.T, rec *statusRec, id string, want zatterav1.InstanceS
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("state %v not reached for %s (last %v)", want, id, rec.state(id))
+}
+
+// TestEnsureUnresolvableTargetRetriesAndWarnsOnce: an unresolvable probe target
+// must not register a monitor (so the next reconcile retries the resolve), must
+// warn exactly once per episode instead of every tick (T-98: a crash-looping
+// container produced 150+ identical lines per deploy), and must resolve cleanly
+// once the container becomes probeable again.
+func TestEnsureUnresolvableTargetRetriesAndWarnsOnce(t *testing.T) {
+	rt := fakeruntime.New()
+	id, err := rt.CreateContainer(context.Background(), crt.ContainerSpec{
+		Name:   "c",
+		Image:  "app:v1",
+		Ports:  []crt.PortBinding{{Name: "tcp", ContainerPort: 6379, HostPort: 61204}},
+		Labels: map[string]string{crt.ManagedLabel: "true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rt.StartContainer(context.Background(), id)
+	rt.SetRestarting(id, true, 1) // crash loop: inspect reports no ports
+
+	var logBuf strings.Builder
+	rec := &statusRec{latest: map[string]*zatterav1.AssignmentObserved{}}
+	mgr := NewManager(context.Background(), ManagerConfig{
+		Clock:   clock.NewFake(),
+		Report:  rec.sink,
+		Runtime: rt,
+		Logger:  slog.New(slog.NewTextHandler(&logBuf, nil)),
+	})
+	mgr.useHostPort = true // deterministic: force the host-port path regardless of GOOS
+
+	spec := &zatterav1.ServiceSpec{
+		Ports:       []*zatterav1.PortSpec{{Name: "tcp", ContainerPort: 6379}},
+		Healthcheck: &zatterav1.HealthCheck{Type: zatterav1.HealthCheckType_HEALTH_CHECK_TYPE_TCP},
+	}
+	a := assign("a1", "h1", run)
+
+	for i := 0; i < 5; i++ { // five reconcile ticks while crash-looping
+		mgr.Ensure(context.Background(), a, spec, id)
+	}
+	if mgr.monitored("a1") {
+		t.Fatal("no monitor must register while the target is unresolvable")
+	}
+	if got := strings.Count(logBuf.String(), "could not resolve"); got != 1 {
+		t.Fatalf("want exactly 1 warn per episode, got %d", got)
+	}
+
+	// Container recovers: ports are inspectable again, the next tick resolves.
+	rt.SetRestarting(id, false, 0)
+	mgr.Ensure(context.Background(), a, spec, id)
+	if !mgr.monitored("a1") {
+		t.Fatal("monitor must register once the target resolves")
+	}
+
+	// A fresh episode after removal warns again (once).
+	mgr.Remove("a1")
+	rt.SetRestarting(id, true, 1)
+	mgr.Ensure(context.Background(), a, spec, id)
+	if got := strings.Count(logBuf.String(), "could not resolve"); got != 2 {
+		t.Fatalf("a new episode should warn once more, got %d total", got)
+	}
 }

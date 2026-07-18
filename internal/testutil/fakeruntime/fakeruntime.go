@@ -33,11 +33,14 @@ type Container struct {
 	ID      string
 	Spec    runtime.ContainerSpec
 	Running bool
-	Created time.Time
-	Started time.Time
-	Stopped time.Time
-	Exit    int
-	IP      string
+	// Restarting mimics Docker's crash-loop backoff: Running stays true and
+	// Inspect reports no bound ports, exactly like the real engine (T-98).
+	Restarting bool
+	Created    time.Time
+	Started    time.Time
+	Stopped    time.Time
+	Exit       int
+	IP         string
 	// LogLines can be appended by tests; Logs() serves them.
 	LogLines []runtime.LogEntry
 }
@@ -76,6 +79,17 @@ func (f *Fake) Snapshot() []Container {
 }
 
 // Get returns one container by id.
+// SetRestarting flips a container into (or out of) Docker's crash-loop
+// backoff state for tests.
+func (f *Fake) SetRestarting(id string, restarting bool, exitCode int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c, ok := f.containers[id]; ok {
+		c.Restarting = restarting
+		c.Exit = exitCode
+	}
+}
+
 func (f *Fake) Get(id string) (Container, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -187,10 +201,11 @@ func (f *Fake) InspectContainer(_ context.Context, id string) (runtime.Container
 	if !ok {
 		return runtime.ContainerState{}, runtime.ErrNotFound
 	}
-	return runtime.ContainerState{
+	st := runtime.ContainerState{
 		ID:         c.ID,
 		Name:       c.Spec.Name,
 		Running:    c.Running,
+		Restarting: c.Restarting,
 		ExitCode:   c.Exit,
 		StartedAt:  c.Started,
 		FinishedAt: c.Stopped,
@@ -198,7 +213,11 @@ func (f *Fake) InspectContainer(_ context.Context, id string) (runtime.Container
 		Labels:     c.Spec.Labels,
 		IPAddress:  c.IP,
 		Image:      c.Spec.Image,
-	}, nil
+	}
+	if c.Restarting {
+		st.Ports = nil // Docker publishes nothing while in restart backoff
+	}
+	return st, nil
 }
 
 func (f *Fake) ListContainers(_ context.Context, labels map[string]string) ([]runtime.ContainerInfo, error) {

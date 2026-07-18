@@ -501,6 +501,15 @@ func (e *Executor) pollLiveness(ctx context.Context) {
 			continue
 		}
 		switch {
+		case st.Restarting:
+			// Crash loop. Docker keeps Running=true during the restart backoff
+			// (with no ports bound), so this MUST be checked before Running or a
+			// dying container reads as "coming up" until the deploy deadline and
+			// the health prober spins on an unresolvable target (T-98).
+			obs := observe(zatterav1.InstanceState_INSTANCE_STATE_FAILED, c.id,
+				fmt.Sprintf("crash-looping: last exit code %d", st.ExitCode), e.now())
+			obs.ExitCode = int32(st.ExitCode)
+			observed[id] = obs
 		case st.Running:
 			obs := observe(zatterav1.InstanceState_INSTANCE_STATE_RUNNING, c.id, "", e.now())
 			// Re-report bound host ports (bringUp's inspect can race Docker's
@@ -564,6 +573,10 @@ func (e *Executor) desiredByID(set *clusterv1.AssignmentSet) map[string]*zattera
 func (e *Executor) fail(id, hash, msg string) *zatterav1.AssignmentObserved {
 	e.failCount[id]++
 	e.failHash[id] = hash
+	// Log every attempt: the message also travels in the observed report, but a
+	// reaped assignment takes it along — the node log is where a failed deploy's
+	// real reason (pull error, network conflict, bad spec) remains findable.
+	e.log.Warn("executor: assignment failed", "assignment", id, "attempt", e.failCount[id], "err", msg)
 	if e.failCount[id] >= maxAttempts {
 		e.log.Warn("executor: parking assignment after repeated failures", "assignment", id, "attempts", e.failCount[id], "err", msg)
 	}

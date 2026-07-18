@@ -219,7 +219,11 @@ type Manager struct {
 
 	mu       sync.Mutex
 	monitors map[string]context.CancelFunc
-	base     context.Context
+	// warned tracks assignments whose probe target could not be resolved, so
+	// the (per-reconcile-tick) retry warns once per episode instead of
+	// flooding the log while a container is crash-looping (T-98).
+	warned map[string]bool
+	base   context.Context
 }
 
 // ManagerConfig configures the health manager.
@@ -250,6 +254,7 @@ func NewManager(base context.Context, cfg ManagerConfig) *Manager {
 		useHostPort: runtime.GOOS == "darwin",
 		log:         cfg.Logger,
 		monitors:    map[string]context.CancelFunc{},
+		warned:      map[string]bool{},
 		base:        base,
 	}
 }
@@ -282,10 +287,19 @@ func (m *Manager) Ensure(ctx context.Context, a *zatterav1.Assignment, spec *zat
 
 	probe, ok := m.buildProbe(ctx, hc, spec, containerID)
 	if !ok {
+		// No monitor is registered, so the next reconcile tick retries the
+		// resolve — this is the retry loop for ports that appear shortly after
+		// start. Warn once per episode: when the container never becomes
+		// probeable (crash loop), repeating it every tick buries the log (T-98).
+		alreadyWarned := m.warned[id]
+		m.warned[id] = true
 		m.mu.Unlock()
-		m.log.Warn("health: could not resolve a probe target; skipping", "assignment", id)
+		if !alreadyWarned {
+			m.log.Warn("health: could not resolve a probe target; will retry each reconcile", "assignment", id)
+		}
 		return
 	}
+	delete(m.warned, id)
 	pctx, cancel := context.WithCancel(m.base)
 	m.monitors[id] = cancel
 	m.mu.Unlock()
@@ -299,6 +313,7 @@ func (m *Manager) Remove(assignID string) {
 	m.mu.Lock()
 	cancel := m.monitors[assignID]
 	delete(m.monitors, assignID)
+	delete(m.warned, assignID)
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -321,6 +336,11 @@ func (m *Manager) Reconcile(live map[string]bool) {
 		if !live[id] {
 			stale = append(stale, cancel)
 			delete(m.monitors, id)
+		}
+	}
+	for id := range m.warned {
+		if !live[id] {
+			delete(m.warned, id)
 		}
 	}
 	m.mu.Unlock()

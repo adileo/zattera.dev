@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -320,4 +321,41 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestPollLivenessCrashLoop: Docker keeps State.Running=true while a container
+// is in restart backoff, so a crash-looping instance used to be reported
+// RUNNING — the deploy advanced to health checking and hung there until the
+// deadline because a restarting container publishes no ports (T-98). It must
+// be reported FAILED, with the exit code, so the orchestrator fails fast and
+// (stateful) restarts the previous instance.
+func TestPollLivenessCrashLoop(t *testing.T) {
+	rt := fakeruntime.New()
+	rec := &statusRec{latest: map[string]*zatterav1.AssignmentObserved{}}
+	e := newExec(rt, rec)
+
+	set := buildSet(1, pair(assign("a1", "h1", run), rtp("app:v1", port("tcp", 6379))))
+	e.reconcile(ctx(), set)
+	if rec.state("a1") != running {
+		t.Fatalf("precondition: a1 should be RUNNING, got %v", rec.state("a1"))
+	}
+
+	// The app starts crashing: Docker flips to Restarting (Running stays true).
+	c := onlyContainer(t, rt)
+	rt.SetRestarting(c.ID, true, 1)
+
+	e.pollLiveness(ctx())
+	if rec.state("a1") != failed {
+		t.Fatalf("a crash-looping container must report FAILED, got %v", rec.state("a1"))
+	}
+	if obs := rec.latest["a1"]; obs.GetExitCode() != 1 || !strings.Contains(obs.GetMessage(), "crash-looping") {
+		t.Fatalf("report should carry the crash-loop reason and exit code, got %+v", obs)
+	}
+
+	// Recovery: the container comes back up — RUNNING again, not sticky-failed.
+	rt.SetRestarting(c.ID, false, 0)
+	e.pollLiveness(ctx())
+	if rec.state("a1") != running {
+		t.Fatalf("a recovered container must report RUNNING again, got %v", rec.state("a1"))
+	}
 }
